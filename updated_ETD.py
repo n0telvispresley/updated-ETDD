@@ -128,42 +128,38 @@ filtered_customers["theft_probability"] = (
     0.2 * filtered_customers["energy_billed_score"]
 ).clip(0, 1)
 
+# Sort filtered_customers by theft_probability in descending order
+filtered_customers = filtered_customers.sort_values(by="theft_probability", ascending=False)
+
+# Number of customers to display in heatmap
+st.subheader("Heatmap Settings")
+num_customers = st.number_input(
+    "Number of high-risk customers to display (0 for all)",
+    min_value=0,
+    max_value=len(filtered_customers),
+    value=min(10, len(filtered_customers)),
+    step=1
+)
+
 # Visuals
 st.subheader("Theft Analysis")
-col3, col4 = st.columns(2)
-
-# Building Theft Probability Heatmap (All Customers)
-with col3:
-    st.markdown("**Building Theft Probability Heatmap (All Customers)**")
-    pivot_data = filtered_customers.pivot(index="ACCOUNT_NUMBER", columns="month", values="theft_probability")
-    if not pivot_data.empty:
-        fig, ax = plt.subplots(figsize=(8, 6))
-        sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, ax=ax, cbar_kws={"label": "Theft Probability"})
-        ax.set_xlabel("Month")
-        ax.set_ylabel("Account Number")
-        ax.set_title(f"Theft Probability for {selected_dt} ({selected_feeder}, June 2025)")
-        plt.xticks(rotation=45, ha="right")
-        plt.tight_layout()
-        st.pyplot(fig)
-    else:
-        st.write("No data available for the selected filters.")
-
-# Top 10 High-Risk Buildings Heatmap
-with col4:
-    st.markdown("**Top 10 High-Risk Buildings Heatmap**")
-    top_10_customers = filtered_customers.nlargest(10, "theft_probability")
-    pivot_top_10 = top_10_customers.pivot(index="ACCOUNT_NUMBER", columns="month", values="theft_probability")
-    if not pivot_top_10.empty:
-        fig, ax = plt.subplots(figsize=(8, 6))
-        sns.heatmap(pivot_top_10, cmap="YlOrRd", vmin=0, vmax=1, ax=ax, cbar_kws={"label": "Theft Probability"})
-        ax.set_xlabel("Month")
-        ax.set_ylabel("Account Number")
-        ax.set_title(f"Top 10 High-Risk Buildings for {selected_dt} ({selected_feeder}, June 2025)")
-        plt.xticks(rotation=45, ha="right")
-        plt.tight_layout()
-        st.pyplot(fig)
-    else:
-        st.write("No data available for top 10 high-risk buildings.")
+st.markdown("**Building Theft Probability Heatmap**")
+if num_customers == 0:
+    heatmap_data = filtered_customers
+else:
+    heatmap_data = filtered_customers.head(num_customers)
+pivot_data = heatmap_data.pivot(index="ACCOUNT_NUMBER", columns="month", values="theft_probability")
+if not pivot_data.empty:
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, ax=ax, cbar_kws={"label": "Theft Probability"})
+    ax.set_xlabel("Month")
+    ax.set_ylabel("Account Number")
+    ax.set_title(f"Theft Probability for {selected_dt} ({selected_feeder}, June 2025)")
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    st.pyplot(fig)
+else:
+    st.write("No data available for the selected filters.")
 
 # Customer List
 st.subheader(f"Customers under {selected_dt} ({selected_feeder})")
