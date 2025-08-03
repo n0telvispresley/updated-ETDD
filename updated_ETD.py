@@ -26,16 +26,6 @@ feeder_df = sheets.get("Feeder Data")
 dt_df = sheets.get("Transformer Data")
 customer_df = sheets.get("Customer Data")
 
-# Debug: Show sheet names and column info
-if st.checkbox("Show debug info"):
-    st.write("Available sheets:", list(sheets.keys()))
-    if customer_df is not None:
-        st.write("Customer columns:", customer_df.columns.tolist())
-        st.write("DT_NO data type:", customer_df["DT_NO"].dtype)
-        st.write("Sample DT_NO values:", customer_df["DT_NO"].head().tolist())
-    if dt_df is not None:
-        st.write("DT columns:", dt_df.columns.tolist())
-
 # Check if sheets loaded correctly
 if feeder_df is None or dt_df is None or customer_df is None:
     st.error("One or more sheets (Feeder Data, Transformer Data, Customer Data) not found.")
@@ -70,7 +60,7 @@ dt_agg.rename(columns={"Consumption (kWh)": "total_dt_kwh"}, inplace=True)
 # Calculate feeder score (inverted for theft risk)
 feeder_merged = feeder_df.merge(dt_agg, on="Feeder", how="left")
 feeder_merged["total_dt_kwh"] = feeder_merged["total_dt_kwh"].fillna(0)
-feeder_merged["feeder_score"] = (1 - feeder_merged["total_dt_kwh"] / feeder_merged["June Energy (kWh)"]).clip(0, 1)
+feeder_merged["feeder_score"] = (1 - feeder_merged["total_dt_kwh"] / feeder_merged["June Energy (kWh)"].replace(0, 1)).clip(0, 1)
 feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["June Energy (kWh)"] - feeder_merged["total_dt_kwh"]
 feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * 209.5
 
@@ -81,7 +71,7 @@ customer_agg.rename(columns={"ENERGY_BILLED (kWh)": "total_billed_kwh"}, inplace
 # Calculate DT score and energy lost (inverted for theft risk)
 dt_merged = dt_df.merge(customer_agg, left_on="DT Number", right_on="DT_NO", how="left")
 dt_merged["total_billed_kwh"] = dt_merged["total_billed_kwh"].fillna(0)
-dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["Consumption (kWh)"]).clip(0, 1)
+dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["Consumption (kWh)"].replace(0, 1)).clip(0, 1)
 dt_merged["energy_lost_kwh"] = dt_merged["Consumption (kWh)"] - dt_merged["total_billed_kwh"]
 dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
 
@@ -94,6 +84,11 @@ customer_df["customer_account_type_score"] = np.where(customer_df["CUSTOMER_ACCO
 st.title("Ikeja Electric Energy Theft Detection Dashboard")
 st.markdown("Detect high-risk buildings using monthly data (June 2025, ₦209.5/kWh).")
 
+# Feeder-Level Summary
+st.subheader("Feeder-Level Loss Summary")
+feeder_summary = feeder_merged[["Feeder", "feeder_energy_lost_kwh", "feeder_financial_loss_naira"]].sort_values(by="feeder_financial_loss_naira", ascending=False)
+st.dataframe(feeder_summary.style.format({"feeder_energy_lost_kwh": "{:,.2f}", "feeder_financial_loss_naira": "₦{:,.2f}"}))
+
 # Filters
 col1, col2 = st.columns(2)
 with col1:
@@ -103,10 +98,35 @@ with col2:
     dt_options = dt_merged[dt_merged["Feeder"] == selected_feeder]["New Unique DT Nomenclature"].unique()
     selected_dt = st.selectbox("Select DT", dt_options)
 
+# Weight Adjustment
+st.subheader("Theft Probability Weights")
+colw1, colw2, colw3 = st.columns(3)
+with colw1:
+    feeder_weight = st.slider("Feeder Score Weight", 0.0, 1.0, 0.2, 0.05)
+    dt_weight = st.slider("DT Score Weight", 0.0, 1.0, 0.3, 0.05)
+with colw2:
+    meter_weight = st.slider("Meter Status Weight", 0.0, 1.0, 0.2, 0.05)
+    account_weight = st.slider("Account Type Weight", 0.0, 1.0, 0.15, 0.05)
+with colw3:
+    customer_weight = st.slider("Customer Account Type Weight", 0.0, 1.0, 0.15, 0.05)
+    energy_weight = st.slider("Energy Billed Weight", 0.0, 1.0, 0.2, 0.05)
+
+# Normalize weights
+total_weight = feeder_weight + dt_weight + meter_weight + account_weight + customer_weight + energy_weight
+if total_weight == 0:
+    st.warning("Total weight cannot be zero. Resetting to default weights.")
+    feeder_weight, dt_weight, meter_weight, account_weight, customer_weight, energy_weight = 0.2, 0.3, 0.2, 0.15, 0.15, 0.2
+    total_weight = 1.0
+feeder_weight /= total_weight
+dt_weight /= total_weight
+meter_weight /= total_weight
+account_weight /= total_weight
+customer_weight /= total_weight
+energy_weight /= total_weight
+
 # Filter data
 dt_number = dt_merged[dt_merged["New Unique DT Nomenclature"] == selected_dt]["DT Number"].iloc[0]
 filtered_customers = customer_df[customer_df["DT_NO"] == dt_number]
-filtered_dt = dt_merged[dt_merged["Feeder"] == selected_feeder]
 
 # Add feeder_score and dt_score to filtered_customers
 filtered_customers = filtered_customers.merge(feeder_merged[["Feeder", "feeder_score"]], 
@@ -118,14 +138,14 @@ filtered_customers = filtered_customers.merge(dt_merged[["DT Number", "dt_score"
 max_billed_kwh = filtered_customers["ENERGY_BILLED (kWh)"].max()
 filtered_customers["energy_billed_score"] = (1 - filtered_customers["ENERGY_BILLED (kWh)"] / (1 if max_billed_kwh == 0 else max_billed_kwh)).clip(0, 1)
 
-# Calculate theft probability with weights
+# Calculate theft probability with dynamic weights
 filtered_customers["theft_probability"] = (
-    0.2 * filtered_customers["feeder_score"] +
-    0.3 * filtered_customers["dt_score"] +
-    0.2 * filtered_customers["meter_status_score"] +
-    0.15 * filtered_customers["account_type_score"] +
-    0.15 * filtered_customers["customer_account_type_score"] +
-    0.2 * filtered_customers["energy_billed_score"]
+    feeder_weight * filtered_customers["feeder_score"] +
+    dt_weight * filtered_customers["dt_score"] +
+    meter_weight * filtered_customers["meter_status_score"] +
+    account_weight * filtered_customers["account_type_score"] +
+    customer_weight * filtered_customers["customer_account_type_score"] +
+    energy_weight * filtered_customers["energy_billed_score"]
 ).clip(0, 1)
 
 # Sort filtered_customers by theft_probability in descending order
@@ -159,7 +179,7 @@ if not pivot_data.empty:
     plt.tight_layout()
     st.pyplot(fig)
 else:
-    st.write("No data available for the selected filters.")
+    st.write("No data available for the selected filters. Please check feeder and DT selections.")
 
 # Customer List
 st.subheader(f"Customers under {selected_dt} ({selected_feeder})")
@@ -169,14 +189,15 @@ if not filtered_customers.empty:
                                     "feeder_score", "dt_score", "meter_status_score", 
                                     "account_type_score", "customer_account_type_score", 
                                     "energy_billed_score", "theft_probability"]]
-                 .style.highlight_max(subset=["theft_probability"], color="lightcoral"))
+                 .style.format({"theft_probability": "{:.3f}"})
+                 .highlight_max(subset=["theft_probability"], color="lightcoral"))
 else:
-    st.write("No customers found for the selected filters.")
+    st.write("No customers found for the selected filters. Please check DT_NO and NAME_OF_FEEDER consistency.")
 
 # Summary Report
 st.subheader("Summary Report")
-total_energy_lost = filtered_dt[filtered_dt["DT Number"] == dt_number]["energy_lost_kwh"].sum()
-total_financial_loss = filtered_dt[filtered_dt["DT Number"] == dt_number]["financial_loss_naira"].sum()
+total_energy_lost = dt_merged[dt_merged["DT Number"] == dt_number]["energy_lost_kwh"].sum()
+total_financial_loss = dt_merged[dt_merged["DT Number"] == dt_number]["financial_loss_naira"].sum()
 st.write(f"Total Energy Lost for {selected_dt} (June 2025): {total_energy_lost:,.2f} kWh")
 st.write(f"Total Financial Loss for {selected_dt} (June 2025): ₦{total_financial_loss:,.2f}")
 st.write(f"Estimated Yearly Savings per Feeder: ₦{total_financial_loss * 12:,.2f}")
