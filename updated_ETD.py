@@ -49,28 +49,8 @@ feeder_df["June Energy (kWh)"] = feeder_df["June Energy (MWh)"] * 1000
 customer_df["month"] = "June 2025"
 dt_df["month"] = "June 2025"
 
-# Define feeder names
-feeder_names = [
-    "11-PTCINJ-T3-Oba Akinjobi",
-    "11-PTCINJ-T2-Medical",
-    "11-PTCINJ-T3-General Hospital",
-    "11-IlupejuINJ-T4-Ikorodu",
-    "11-PTCINJ-T1-Olowu",
-    "11-Adekunle FajuyiINJ-T1-Isaac John",
-    "11-Adekunle FajuyiINJ-T1-Oduduwa",
-    "11-MarylandINJ-T1-PTC",
-    "11-MarylandINJ-T2-GRA",
-    "11-New AlausaINJ-T6-Awolowo",
-    "11-New AlausaINJ-T4-Allen",
-    "11-PTCINJ-T1-Opebi",
-    "11-PTCINJ-T2-Awuse",
-    "11-OpebiINJ-T1-Agbaoku",
-    "11-OpebiINJ-T1-Salvation",
-    "11-IlupejuINJ-T1-ATM",
-    "11-IlupejuINJ-T1-Rida Plastic",
-    "11-MarylandINJ-T2-Ojota",
-    "11-IlupejuINJ-T4-Army Cant."
-]
+# Extract feeder names from Feeder Data
+feeder_names = feeder_df["Feeder"].astype(str).tolist()
 
 # Map DTs to feeders using prefix matching
 def map_dt_to_feeder(dt_name):
@@ -87,10 +67,10 @@ dt_df = dt_df.dropna(subset=["Feeder"])  # Drop DTs with no matching feeder
 dt_agg = dt_df.groupby("Feeder")["Consumption (kWh)"].sum().reset_index()
 dt_agg.rename(columns={"Consumption (kWh)": "total_dt_kwh"}, inplace=True)
 
-# Calculate feeder score
+# Calculate feeder score (inverted for theft risk)
 feeder_merged = feeder_df.merge(dt_agg, on="Feeder", how="left")
 feeder_merged["total_dt_kwh"] = feeder_merged["total_dt_kwh"].fillna(0)
-feeder_merged["feeder_score"] = (feeder_merged["total_dt_kwh"] / feeder_merged["June Energy (kWh)"]).clip(0, 1)
+feeder_merged["feeder_score"] = (1 - feeder_merged["total_dt_kwh"] / feeder_merged["June Energy (kWh)"]).clip(0, 1)
 feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["June Energy (kWh)"] - feeder_merged["total_dt_kwh"]
 feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * 209.5
 
@@ -98,10 +78,10 @@ feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost
 customer_agg = customer_df.groupby("DT_NO")["ENERGY_BILLED (kWh)"].sum().reset_index()
 customer_agg.rename(columns={"ENERGY_BILLED (kWh)": "total_billed_kwh"}, inplace=True)
 
-# Calculate DT score and energy lost
+# Calculate DT score and energy lost (inverted for theft risk)
 dt_merged = dt_df.merge(customer_agg, left_on="DT Number", right_on="DT_NO", how="left")
 dt_merged["total_billed_kwh"] = dt_merged["total_billed_kwh"].fillna(0)
-dt_merged["dt_score"] = (dt_merged["total_billed_kwh"] / dt_merged["Consumption (kWh)"]).clip(0, 1)
+dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["Consumption (kWh)"]).clip(0, 1)
 dt_merged["energy_lost_kwh"] = dt_merged["Consumption (kWh)"] - dt_merged["total_billed_kwh"]
 dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
 
@@ -138,10 +118,10 @@ filtered_customers = filtered_customers.merge(dt_merged[["DT Number", "dt_score"
 max_billed_kwh = filtered_customers["ENERGY_BILLED (kWh)"].max()
 filtered_customers["energy_billed_score"] = (1 - filtered_customers["ENERGY_BILLED (kWh)"] / (1 if max_billed_kwh == 0 else max_billed_kwh)).clip(0, 1)
 
-# Calculate theft probability with weights (using inverse of scores for higher theft risk)
+# Calculate theft probability with weights
 filtered_customers["theft_probability"] = (
-    0.2 * (1 - filtered_customers["feeder_score"]) +
-    0.3 * (1 - filtered_customers["dt_score"]) +
+    0.2 * filtered_customers["feeder_score"] +
+    0.3 * filtered_customers["dt_score"] +
     0.2 * filtered_customers["meter_status_score"] +
     0.15 * filtered_customers["account_type_score"] +
     0.15 * filtered_customers["customer_account_type_score"] +
@@ -208,4 +188,4 @@ st.write(f"Total Yearly Savings (4 Feeders): ₦{total_financial_loss * 12 * 4:,
 
 # Footer
 st.markdown("Built by Elvis for Ikeja Electric SIWES III. Live demo for August 7, 2025 pitch.")
-st.markdown("Contact: [Your LinkedIn] | [your-app.streamlit.app]")
+st.markdown("Contact: elvisebenuwah@gmail.com | www.linkedin.com/in/elvis-ebenuwah-3956421b2")
