@@ -14,12 +14,12 @@ if uploaded_file is None:
     st.warning("Please upload an Excel file to proceed.")
     st.stop()
 
-# Load Excel file with dtype to preserve raw values
+# Load Excel file with converters to preserve raw values
 try:
     sheets = pd.read_excel(
         uploaded_file,
         sheet_name=None,
-        dtype={
+        converters={
             "Feeder Data": {"Feeder": str},
             "Transformer Data": {"New Unique DT Nomenclature": str, "DT Number": str},
             "Customer Data": {"NAME_OF_DT": str, "NAME_OF_FEEDER": str, "METER_NUMBER": str}
@@ -39,13 +39,13 @@ if feeder_df is None or dt_df is None or customer_df is None:
     st.error("One or more sheets (Feeder Data, Transformer Data, Customer Data) not found.")
     st.stop()
 
-# Ensure string type for key columns (no apostrophe stripping)
-feeder_df["Feeder"] = feeder_df["Feeder"].astype(str)
-dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].astype(str)
-dt_df["DT Number"] = dt_df["DT Number"].astype(str)
-customer_df["NAME_OF_DT"] = customer_df["NAME_OF_DT"].astype(str)
-customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str)
-customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str)
+# Handle NaN values and ensure string type
+feeder_df["Feeder"] = feeder_df["Feeder"].astype(str).replace("nan", "Unknown")
+dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].astype(str).replace("nan", "Unknown")
+dt_df["DT Number"] = dt_df["DT Number"].astype(str).replace("nan", "Unknown")
+customer_df["NAME_OF_DT"] = customer_df["NAME_OF_DT"].astype(str).replace("nan", "Unknown")
+customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str).replace("nan", "Unknown")
+customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str).replace("nan", "Unknown")
 
 # Debug: Show sheet names and column info
 if st.checkbox("Show debug info"):
