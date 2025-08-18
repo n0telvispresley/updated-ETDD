@@ -35,6 +35,8 @@ if st.checkbox("Show debug info"):
         st.write("Sample DT_NO values:", customer_df["DT_NO"].head().tolist())
     if dt_df is not None:
         st.write("DT columns:", dt_df.columns.tolist())
+        st.write("DT Number data type:", dt_df["DT Number"].dtype)
+        st.write("Sample DT Number values:", dt_df["DT Number"].head().tolist())
 
 # Check if sheets loaded correctly
 if feeder_df is None or dt_df is None or customer_df is None:
@@ -49,8 +51,15 @@ feeder_df["June Energy (kWh)"] = feeder_df["June Energy (MWh)"] * 1000
 customer_df["month"] = "June 2025"
 dt_df["month"] = "June 2025"
 
+# Ensure consistent data types for merges
+customer_df["DT_NO"] = customer_df["DT_NO"].astype(str)
+dt_df["DT Number"] = dt_df["DT Number"].astype(str)
+dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].astype(str)
+feeder_df["Feeder"] = feeder_df["Feeder"].astype(str)
+customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str)
+
 # Extract feeder names from Feeder Data
-feeder_names = feeder_df["Feeder"].astype(str).tolist()
+feeder_names = feeder_df["Feeder"].tolist()
 
 # Map DTs to feeders using prefix matching
 def map_dt_to_feeder(dt_name):
@@ -85,8 +94,8 @@ dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["Consumpt
 dt_merged["energy_lost_kwh"] = dt_merged["Consumption (kWh)"] - dt_merged["total_billed_kwh"]
 dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
 
-# Calculate DT-level theft probability (average)
-dt_merged["dt_theft_probability"] = dt_merged["dt_score"]  # Can expand with other factors if needed
+# Calculate DT-level theft probability (using dt_score for simplicity)
+dt_merged["dt_theft_probability"] = dt_merged["dt_score"]
 
 # Sort DT options by dt_theft_probability (descending) and format with probability
 dt_sorted = dt_merged.sort_values(by="dt_theft_probability", ascending=False)
@@ -122,10 +131,41 @@ with col2:
     selected_dt = st.selectbox("Select DT", dt_options_sorted)
     selected_dt_name = selected_dt.split(" (Probability:")[0]  # Extract DT name
 
+# Weight Sliders
+st.subheader("Theft Probability Weights")
+colw1, colw2, colw3 = st.columns(3)
+with colw1:
+    feeder_weight = st.slider("Feeder Score Weight", 0.0, 1.0, 0.2, 0.05)
+    dt_weight = st.slider("DT Score Weight", 0.0, 1.0, 0.3, 0.05)
+with colw2:
+    meter_weight = st.slider("Meter Status Weight", 0.0, 1.0, 0.2, 0.05)
+    account_weight = st.slider("Account Type Weight", 0.0, 1.0, 0.15, 0.05)
+with colw3:
+    customer_weight = st.slider("Customer Account Type Weight", 0.0, 1.0, 0.15, 0.05)
+    energy_weight = st.slider("Energy Billed Weight", 0.0, 1.0, 0.2, 0.05)
+
+# Normalize weights
+total_weight = feeder_weight + dt_weight + meter_weight + account_weight + customer_weight + energy_weight
+if total_weight == 0:
+    st.warning("Total weight cannot be zero. Resetting to default weights.")
+    feeder_weight, dt_weight, meter_weight, account_weight, customer_weight, energy_weight = 0.2, 0.3, 0.2, 0.15, 0.15, 0.2
+    total_weight = 1.0
+feeder_weight /= total_weight
+dt_weight /= total_weight
+meter_weight /= total_weight
+account_weight /= total_weight
+customer_weight /= total_weight
+energy_weight /= total_weight
+
 # Filter data
 dt_number = dt_merged[dt_merged["New Unique DT Nomenclature"] == selected_dt_name]["DT Number"].iloc[0]
 filtered_customers = customer_df[customer_df["DT_NO"] == dt_number]
 filtered_dt = dt_merged[dt_merged["Feeder"] == selected_feeder_name]
+
+# Debug: Check filtered_customers
+if st.checkbox("Debug: Show filtered customers info"):
+    st.write(f"Filtered customers count: {len(filtered_customers)}")
+    st.write("Filtered customers sample:", filtered_customers.head())
 
 # Add feeder_score and dt_score to filtered_customers
 filtered_customers = filtered_customers.merge(feeder_merged[["Feeder", "feeder_score"]], 
@@ -139,16 +179,39 @@ filtered_customers["energy_billed_score"] = (1 - filtered_customers["ENERGY_BILL
 
 # Calculate theft probability with weights
 filtered_customers["theft_probability"] = (
-    0.2 * filtered_customers["feeder_score"] +
-    0.3 * filtered_customers["dt_score"] +
-    0.2 * filtered_customers["meter_status_score"] +
-    0.15 * filtered_customers["account_type_score"] +
-    0.15 * filtered_customers["customer_account_type_score"] +
-    0.2 * filtered_customers["energy_billed_score"]
+    feeder_weight * filtered_customers["feeder_score"].fillna(0) +
+    dt_weight * filtered_customers["dt_score"].fillna(0) +
+    meter_weight * filtered_customers["meter_status_score"] +
+    account_weight * filtered_customers["account_type_score"] +
+    customer_weight * filtered_customers["customer_account_type_score"] +
+    energy_weight * filtered_customers["energy_billed_score"]
 ).clip(0, 1)
 
-# Sort filtered_customers by theft_probability in descending order
+# Add risk tiers
+filtered_customers["risk_tier"] = pd.cut(
+    filtered_customers["theft_probability"],
+    bins=[0, 0.4, 0.7, 1.0],
+    labels=["Low", "Medium", "High"],
+    include_lowest=True
+)
+
+# Sort filtered_customers by theft_probability
 filtered_customers = filtered_customers.sort_values(by="theft_probability", ascending=False)
+
+# CSV Export
+st.subheader("Export Customer Data")
+if not filtered_customers.empty:
+    csv = filtered_customers[["ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "ENERGY_BILLED (kWh)", 
+                             "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", 
+                             "feeder_score", "dt_score", "meter_status_score", 
+                             "account_type_score", "customer_account_type_score", 
+                             "energy_billed_score", "theft_probability", "risk_tier"]].to_csv(index=False)
+    st.download_button(
+        label="Download Customer List as CSV",
+        data=csv,
+        file_name=f"theft_analysis_{selected_dt_name}_{selected_feeder_name}.csv",
+        mime="text/csv"
+    )
 
 # Number of customers to display in heatmap
 st.subheader("Heatmap Settings")
@@ -163,34 +226,46 @@ num_customers = st.number_input(
 # Visuals
 st.subheader("Theft Analysis")
 st.markdown("**Building Theft Probability Heatmap**")
-if num_customers == 0:
-    heatmap_data = filtered_customers
+if not filtered_customers.empty:
+    if num_customers == 0:
+        heatmap_data = filtered_customers
+    else:
+        heatmap_data = filtered_customers.head(num_customers)
+    pivot_data = heatmap_data.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean")
+    if not pivot_data.empty:
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
+        plt.xlabel("Month")
+        plt.ylabel("Account Number")
+        plt.title(f"Theft Probability for {selected_dt_name} ({selected_feeder_name}, June 2025)")
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+        st.pyplot(plt.gcf())
+        plt.close()  # Clear figure to prevent overlap
+    else:
+        st.error("No data available for heatmap. Check if customers exist for the selected DT.")
 else:
-    heatmap_data = filtered_customers.head(num_customers)
-pivot_data = heatmap_data.pivot(index="ACCOUNT_NUMBER", columns="month", values="theft_probability")
-if not pivot_data.empty:
-    fig, ax = plt.subplots(figsize=(8, 6))
-    sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, ax=ax, cbar_kws={"label": "Theft Probability"})
-    ax.set_xlabel("Month")
-    ax.set_ylabel("Account Number")
-    ax.set_title(f"Theft Probability for {selected_dt_name} ({selected_feeder_name}, June 2025)")
-    plt.xticks(rotation=45, ha="right")
-    plt.tight_layout()
-    st.pyplot(fig)
-else:
-    st.write("No data available for the selected filters.")
+    st.error("No customers found for the selected DT. Verify DT_NO in Customer Data matches DT Number in Transformer Data.")
 
 # Customer List
 st.subheader(f"Customers under {selected_dt_name} ({selected_feeder_name})")
 if not filtered_customers.empty:
-    st.dataframe(filtered_customers[["ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "ENERGY_BILLED (kWh)", 
-                                    "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", 
-                                    "feeder_score", "dt_score", "meter_status_score", 
-                                    "account_type_score", "customer_account_type_score", 
-                                    "energy_billed_score", "theft_probability"]]
-                 .style.highlight_max(subset=["theft_probability"], color="lightcoral"))
+    styled_df = filtered_customers[["ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "ENERGY_BILLED (kWh)", 
+                                   "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", 
+                                   "feeder_score", "dt_score", "meter_status_score", 
+                                   "account_type_score", "customer_account_type_score", 
+                                   "energy_billed_score", "theft_probability", "risk_tier"]].style.format({
+        "feeder_score": "{:.3f}",
+        "dt_score": "{:.3f}",
+        "meter_status_score": "{:.3f}",
+        "account_type_score": "{:.3f}",
+        "customer_account_type_score": "{:.3f}",
+        "energy_billed_score": "{:.3f}",
+        "theft_probability": "{:.3f}"
+    }).highlight_max(subset=["theft_probability"], color="lightcoral")
+    st.dataframe(styled_df)
 else:
-    st.write("No customers found for the selected filters.")
+    st.error("No customers found. Check DT_NO and NAME_OF_FEEDER consistency.")
 
 # Summary Report
 st.subheader("Summary Report")
@@ -199,8 +274,7 @@ total_financial_loss = filtered_dt[filtered_dt["DT Number"] == dt_number]["finan
 st.write(f"Total Energy Lost for {selected_dt_name} (June 2025): {total_energy_lost:,.2f} kWh")
 st.write(f"Total Financial Loss for {selected_dt_name} (June 2025): ₦{total_financial_loss:,.2f}")
 st.write(f"Estimated Yearly Savings per Feeder: ₦{total_financial_loss * 12:,.2f}")
-st.write(f"Total Yearly Savings (4 Feeders): ₦{total_financial_loss * 12 * 4:,.2f}")
 
 # Footer
-st.markdown("Built by Elvis for Ikeja Electric SIWES III. Live demo for August 7, 2025 pitch.")
+st.markdown("Built by Elvis for Ikeja Electric SIWES III. Field testing version, August 2025.")
 st.markdown("Contact: elvisebenuwah@gmail.com | www.linkedin.com/in/elvis-ebenuwah-3956421b2")
