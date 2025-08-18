@@ -112,9 +112,23 @@ md_customers["ACCOUNT_TYPE"] = "Postpaid"
 md_customers["CUSTOMER_ACCOUNT_TYPE"] = "MD"
 md_customers["NAME_OF_FEEDER"] = md_customers["Feeder"]
 md_customers["theft_probability"] = md_customers["dt_theft_probability"]
+md_customers["meter_status_score"] = 0.9  # Not Metered
+md_customers["account_type_score"] = 0.8  # Postpaid
+md_customers["customer_account_type_score"] = 0.8  # MD
+md_customers["energy_billed_score"] = 0.0  # No billed energy
 
 # Append MD-owned DTs to customer_df
 customer_df = pd.concat([customer_df, md_customers], ignore_index=True)
+
+# Calculate scores for non-MD customers
+customer_df["meter_status_score"] = np.where(customer_df["METER_STATUS"] == "Not Metered", 0.9, 0.2)
+customer_df["account_type_score"] = np.where(customer_df["ACCOUNT_TYPE"] == "Postpaid", 0.8, 0.3)
+customer_df["customer_account_type_score"] = np.where(customer_df["CUSTOMER_ACCOUNT_TYPE"] == "MD", 0.8, 0.3)
+customer_df["energy_billed_score"] = np.where(
+    customer_df["CUSTOMER_ACCOUNT_TYPE"] == "MD",
+    0.0,
+    (1 - customer_df["ENERGY_BILLED (kWh)"] / (1 if customer_df["ENERGY_BILLED (kWh)"].max() == 0 else customer_df["ENERGY_BILLED (kWh)"].max())).clip(0, 1)
+)
 
 # Sort DT options by dt_theft_probability (descending) and format with probability
 dt_sorted = dt_merged.sort_values(by="dt_theft_probability", ascending=False)
@@ -123,11 +137,6 @@ dt_options_sorted = [f"{dt} (Probability: {prob:.2f})" for dt, prob in zip(dt_so
 # Sort feeders by feeder_financial_loss_naira (descending) and format with lost energy
 feeder_merged = feeder_merged.sort_values(by="feeder_financial_loss_naira", ascending=False)
 feeder_options_sorted = [f"{feeder} (Lost Energy: {lost:,.2f} kWh)" for feeder, lost in zip(feeder_merged["Feeder"], feeder_merged["feeder_energy_lost_kwh"])]
-
-# Calculate new theft criteria for non-MD customers
-customer_df["meter_status_score"] = np.where(customer_df["METER_STATUS"] == "Not Metered", 0.9, 0.2)
-customer_df["account_type_score"] = np.where(customer_df["ACCOUNT_TYPE"] == "Postpaid", 0.8, 0.3)
-customer_df["customer_account_type_score"] = np.where(customer_df["CUSTOMER_ACCOUNT_TYPE"] == "MD", 0.8, 0.3)
 
 # Streamlit UI
 st.title("Ikeja Electric Energy Theft Detection Dashboard")
@@ -190,13 +199,6 @@ filtered_customers = filtered_customers.merge(feeder_merged[["Feeder", "feeder_s
                                              left_on="NAME_OF_FEEDER", right_on="Feeder", how="left")
 filtered_customers = filtered_customers.merge(dt_merged[["New Unique DT Nomenclature", "dt_score"]], 
                                              left_on="NAME_OF_DT", right_on="New Unique DT Nomenclature", how="left")
-
-# Calculate energy billed score for non-MD customers
-filtered_customers["energy_billed_score"] = np.where(
-    filtered_customers["CUSTOMER_ACCOUNT_TYPE"] == "MD",
-    filtered_customers["energy_billed_score"].fillna(0),
-    (1 - filtered_customers["ENERGY_BILLED (kWh)"] / (1 if filtered_customers["ENERGY_BILLED (kWh)"].max() == 0 else filtered_customers["ENERGY_BILLED (kWh)"].max())).clip(0, 1)
-)
 
 # Calculate theft probability with weights (use dt_theft_probability for MD-owned DTs)
 filtered_customers["theft_probability"] = np.where(
