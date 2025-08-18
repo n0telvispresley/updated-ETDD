@@ -100,6 +100,22 @@ dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
 # Calculate DT-level theft probability (using dt_score for simplicity)
 dt_merged["dt_theft_probability"] = dt_merged["dt_score"]
 
+# Handle MD-owned DTs with no customers
+dt_no_customers = dt_merged[~dt_merged["New Unique DT Nomenclature"].isin(customer_df["NAME_OF_DT"])]
+md_customers = dt_no_customers[["New Unique DT Nomenclature", "DT Number", "Feeder", "dt_theft_probability", "month"]].copy()
+md_customers["METER_NUMBER"] = md_customers["DT Number"]
+md_customers["CUSTOMER_NAME"] = md_customers["New Unique DT Nomenclature"]
+md_customers["ADDRESS"] = "MD-Owned DT"
+md_customers["ENERGY_BILLED (kWh)"] = 0
+md_customers["METER_STATUS"] = "Not Metered"
+md_customers["ACCOUNT_TYPE"] = "Postpaid"
+md_customers["CUSTOMER_ACCOUNT_TYPE"] = "MD"
+md_customers["NAME_OF_FEEDER"] = md_customers["Feeder"]
+md_customers["theft_probability"] = md_customers["dt_theft_probability"]
+
+# Append MD-owned DTs to customer_df
+customer_df = pd.concat([customer_df, md_customers], ignore_index=True)
+
 # Sort DT options by dt_theft_probability (descending) and format with probability
 dt_sorted = dt_merged.sort_values(by="dt_theft_probability", ascending=False)
 dt_options_sorted = [f"{dt} (Probability: {prob:.2f})" for dt, prob in zip(dt_sorted["New Unique DT Nomenclature"], dt_sorted["dt_theft_probability"])]
@@ -108,14 +124,14 @@ dt_options_sorted = [f"{dt} (Probability: {prob:.2f})" for dt, prob in zip(dt_so
 feeder_merged = feeder_merged.sort_values(by="feeder_financial_loss_naira", ascending=False)
 feeder_options_sorted = [f"{feeder} (Lost Energy: {lost:,.2f} kWh)" for feeder, lost in zip(feeder_merged["Feeder"], feeder_merged["feeder_energy_lost_kwh"])]
 
-# Calculate new theft criteria
+# Calculate new theft criteria for non-MD customers
 customer_df["meter_status_score"] = np.where(customer_df["METER_STATUS"] == "Not Metered", 0.9, 0.2)
 customer_df["account_type_score"] = np.where(customer_df["ACCOUNT_TYPE"] == "Postpaid", 0.8, 0.3)
 customer_df["customer_account_type_score"] = np.where(customer_df["CUSTOMER_ACCOUNT_TYPE"] == "MD", 0.8, 0.3)
 
 # Streamlit UI
 st.title("Ikeja Electric Energy Theft Detection Dashboard")
-st.markdown("Detect high-risk buildings using monthly data (June 2025, ₦209.5/kWh).")
+st.markdown("Detect high-risk buildings and MD-owned DTs using monthly data (June 2025, ₦209.5/kWh).")
 
 # Feeder-Level Summary
 st.subheader("Feeder-Level Loss Summary")
@@ -175,19 +191,26 @@ filtered_customers = filtered_customers.merge(feeder_merged[["Feeder", "feeder_s
 filtered_customers = filtered_customers.merge(dt_merged[["New Unique DT Nomenclature", "dt_score"]], 
                                              left_on="NAME_OF_DT", right_on="New Unique DT Nomenclature", how="left")
 
-# Calculate energy billed score
-max_billed_kwh = filtered_customers["ENERGY_BILLED (kWh)"].max()
-filtered_customers["energy_billed_score"] = (1 - filtered_customers["ENERGY_BILLED (kWh)"] / (1 if max_billed_kwh == 0 else max_billed_kwh)).clip(0, 1)
+# Calculate energy billed score for non-MD customers
+filtered_customers["energy_billed_score"] = np.where(
+    filtered_customers["CUSTOMER_ACCOUNT_TYPE"] == "MD",
+    filtered_customers["energy_billed_score"].fillna(0),
+    (1 - filtered_customers["ENERGY_BILLED (kWh)"] / (1 if filtered_customers["ENERGY_BILLED (kWh)"].max() == 0 else filtered_customers["ENERGY_BILLED (kWh)"].max())).clip(0, 1)
+)
 
-# Calculate theft probability with weights
-filtered_customers["theft_probability"] = (
-    feeder_weight * filtered_customers["feeder_score"].fillna(0) +
-    dt_weight * filtered_customers["dt_score"].fillna(0) +
-    meter_weight * filtered_customers["meter_status_score"] +
-    account_weight * filtered_customers["account_type_score"] +
-    customer_weight * filtered_customers["customer_account_type_score"] +
-    energy_weight * filtered_customers["energy_billed_score"]
-).clip(0, 1)
+# Calculate theft probability with weights (use dt_theft_probability for MD-owned DTs)
+filtered_customers["theft_probability"] = np.where(
+    filtered_customers["CUSTOMER_ACCOUNT_TYPE"] == "MD",
+    filtered_customers["theft_probability"].fillna(filtered_customers["dt_score"]),
+    (
+        feeder_weight * filtered_customers["feeder_score"].fillna(0) +
+        dt_weight * filtered_customers["dt_score"].fillna(0) +
+        meter_weight * filtered_customers["meter_status_score"] +
+        account_weight * filtered_customers["account_type_score"] +
+        customer_weight * filtered_customers["customer_account_type_score"] +
+        energy_weight * filtered_customers["energy_billed_score"]
+    ).clip(0, 1)
+)
 
 # Add risk tiers
 filtered_customers["risk_tier"] = pd.cut(
@@ -245,9 +268,9 @@ if not filtered_customers.empty:
         st.pyplot(plt.gcf())
         plt.close()  # Clear figure to prevent overlap
     else:
-        st.error("No data available for heatmap. Check if customers exist for the selected DT.")
+        st.error("No data available for heatmap. Check if customers or MD-owned DT exist for the selected DT.")
 else:
-    st.error("No customers found. Check if NAME_OF_DT in Customer Data matches New Unique DT Nomenclature in Transformer Data.")
+    st.error("No customers or MD-owned DT found. Check if NAME_OF_DT in Customer Data matches New Unique DT Nomenclature in Transformer Data.")
 
 # Customer List
 st.subheader(f"Customers under {selected_dt_name} ({selected_feeder_name})")
@@ -267,7 +290,7 @@ if not filtered_customers.empty:
     }).highlight_max(subset=["theft_probability"], color="lightcoral")
     st.dataframe(styled_df)
 else:
-    st.error("No customers found. Check NAME_OF_DT and NAME_OF_FEEDER consistency.")
+    st.error("No customers or MD-owned DT found. Check NAME_OF_DT and NAME_OF_FEEDER consistency.")
 
 # Summary Report
 st.subheader("Summary Report")
