@@ -14,9 +14,17 @@ if uploaded_file is None:
     st.warning("Please upload an Excel file to proceed.")
     st.stop()
 
-# Load Excel file
+# Load Excel file with dtype to preserve leading zeros
 try:
-    sheets = pd.read_excel(uploaded_file, sheet_name=None)
+    sheets = pd.read_excel(
+        uploaded_file,
+        sheet_name=None,
+        dtype={
+            "Feeder Data": {"Feeder": str},
+            "Transformer Data": {"New Unique DT Nomenclature": str, "DT Number": str},
+            "Customer Data": {"NAME_OF_DT": str, "NAME_OF_FEEDER": str, "METER_NUMBER": str}
+        }
+    )
 except Exception as e:
     st.error(f"Error reading Excel file: {e}")
     st.stop()
@@ -41,6 +49,8 @@ if st.checkbox("Show debug info"):
         st.write("DT columns:", dt_df.columns.tolist())
         st.write("New Unique DT Nomenclature data type:", dt_df["New Unique DT Nomenclature"].dtype)
         st.write("Sample New Unique DT Nomenclature values:", dt_df["New Unique DT Nomenclature"].head().tolist())
+        st.write("DT Number data type:", dt_df["DT Number"].dtype)
+        st.write("Sample DT Number values:", dt_df["DT Number"].head().tolist())
     if feeder_df is not None:
         st.write("Feeder columns:", feeder_df.columns.tolist())
         st.write("Feeder data type:", feeder_df["Feeder"].dtype)
@@ -59,7 +69,7 @@ feeder_df["June Energy (kWh)"] = feeder_df["June Energy (MWh)"] * 1000
 customer_df["month"] = "June 2025"
 dt_df["month"] = "June 2025"
 
-# Ensure consistent data types for merges
+# Ensure consistent data types (already handled in read_excel, but reinforce)
 customer_df["NAME_OF_DT"] = customer_df["NAME_OF_DT"].astype(str)
 customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str)
 customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str)
