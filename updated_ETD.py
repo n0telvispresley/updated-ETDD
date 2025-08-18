@@ -10,7 +10,7 @@ st.set_page_config(page_title="IE Energy Theft Detection Dashboard", layout="wid
 # Custom converter to preserve exact string values
 def preserve_exact_string(value):
     if pd.isna(value) or value is None:
-        return ""  # Convert NaN or None to empty string
+        return ""  # Convert NaN/Null/None to empty string
     return str(value)  # Preserve exact string, including apostrophes
 
 # File uploader
@@ -28,7 +28,7 @@ try:
         converters={
             "Feeder Data": {"Feeder": preserve_exact_string},
             "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "DT Number": preserve_exact_string},
-            "Customer Data": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "METER_NUMBER": preserve_exact_string}
+            "Customer Data": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string}
         }
     )
 except Exception as e:
@@ -51,6 +51,7 @@ dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].astype
 dt_df["DT Number"] = dt_df["DT Number"].astype(str)
 customer_df["NAME_OF_DT"] = customer_df["NAME_OF_DT"].astype(str)
 customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str)
+customer_df["ACCOUNT_NUMBER"] = customer_df["ACCOUNT_NUMBER"].astype(str)
 customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str)
 
 # Debug: Show sheet names and column info
@@ -62,18 +63,18 @@ if st.checkbox("Show debug info"):
         st.write("Sample NAME_OF_DT values:", customer_df["NAME_OF_DT"].head().tolist())
         st.write("NAME_OF_FEEDER data type:", customer_df["NAME_OF_FEEDER"].dtype)
         st.write("Sample NAME_OF_FEEDER values:", customer_df["NAME_OF_FEEDER"].head().tolist())
+        st.write("ACCOUNT_NUMBER data type:", customer_df["ACCOUNT_NUMBER"].dtype)
+        st.write("Sample ACCOUNT_NUMBER values:", customer_df["ACCOUNT_NUMBER"].head().tolist())
+        st.write("Count of empty ACCOUNT_NUMBER:", (customer_df["ACCOUNT_NUMBER"] == "").sum())
         st.write("METER_NUMBER data type:", customer_df["METER_NUMBER"].dtype)
         st.write("Sample METER_NUMBER values:", customer_df["METER_NUMBER"].head().tolist())
         st.write("Count of empty METER_NUMBER:", (customer_df["METER_NUMBER"] == "").sum())
-        st.write("Count of non-empty METER_NUMBER:", (customer_df["METER_NUMBER"] != "").sum())
     if dt_df is not None:
         st.write("DT columns:", dt_df.columns.tolist())
         st.write("New Unique DT Nomenclature data type:", dt_df["New Unique DT Nomenclature"].dtype)
         st.write("Sample New Unique DT Nomenclature values:", dt_df["New Unique DT Nomenclature"].head().tolist())
         st.write("DT Number data type:", dt_df["DT Number"].dtype)
         st.write("Sample DT Number values:", dt_df["DT Number"].head().tolist())
-        st.write("Count of empty DT Number:", (dt_df["DT Number"] == "").sum())
-        st.write("Count of non-empty DT Number:", (dt_df["DT Number"] != "").sum())
     if feeder_df is not None:
         st.write("Feeder columns:", feeder_df.columns.tolist())
         st.write("Feeder data type:", feeder_df["Feeder"].dtype)
@@ -129,6 +130,7 @@ dt_merged["dt_theft_probability"] = dt_merged["dt_score"]
 # Handle MD-owned DTs with no customers
 dt_no_customers = dt_merged[~dt_merged["New Unique DT Nomenclature"].isin(customer_df["NAME_OF_DT"])]
 md_customers = dt_no_customers[["New Unique DT Nomenclature", "DT Number", "Feeder", "dt_theft_probability", "month"]].copy()
+md_customers["ACCOUNT_NUMBER"] = md_customers["DT Number"]
 md_customers["METER_NUMBER"] = md_customers["DT Number"]
 md_customers["CUSTOMER_NAME"] = md_customers["New Unique DT Nomenclature"]
 md_customers["ADDRESS"] = "MD-Owned DT"
@@ -219,6 +221,7 @@ filtered_dt = dt_merged[dt_merged["New Unique DT Nomenclature"] == selected_dt_n
 if st.checkbox("Debug: Show filtered customers info"):
     st.write(f"Filtered customers count: {len(filtered_customers)}")
     st.write("Filtered customers sample:", filtered_customers.head())
+    st.write("Unique ACCOUNT_NUMBER values:", filtered_customers["ACCOUNT_NUMBER"].unique().tolist())
     st.write("Unique METER_NUMBER values:", filtered_customers["METER_NUMBER"].unique().tolist())
 
 # Add feeder_score and dt_score to filtered_customers
@@ -255,7 +258,7 @@ filtered_customers = filtered_customers.sort_values(by="theft_probability", asce
 # CSV Export
 st.subheader("Export Customer Data")
 if not filtered_customers.empty:
-    csv = filtered_customers[["METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "ENERGY_BILLED (kWh)", 
+    csv = filtered_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "ENERGY_BILLED (kWh)", 
                              "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", 
                              "feeder_score", "dt_score", "meter_status_score", 
                              "account_type_score", "customer_account_type_score", 
@@ -287,31 +290,31 @@ if not filtered_customers.empty:
         heatmap_data = filtered_customers
     else:
         heatmap_data = filtered_customers.head(num_customers)
-    # Ensure METER_NUMBER is not empty for heatmap
-    heatmap_data = heatmap_data[heatmap_data["METER_NUMBER"] != ""]
+    # Ensure ACCOUNT_NUMBER is not empty for heatmap
+    heatmap_data = heatmap_data[heatmap_data["ACCOUNT_NUMBER"] != ""]
     if not heatmap_data.empty:
-        pivot_data = heatmap_data.pivot_table(index="METER_NUMBER", columns="month", values="theft_probability", aggfunc="mean")
+        pivot_data = heatmap_data.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean")
         if not pivot_data.empty:
             plt.figure(figsize=(8, 6))
             sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
             plt.xlabel("Month")
-            plt.ylabel("Meter Number")
+            plt.ylabel("Account Number")
             plt.title(f"Theft Probability for {selected_dt_name} ({selected_feeder_name}, June 2025)")
             plt.xticks(rotation=45, ha="right")
             plt.tight_layout()
             st.pyplot(plt.gcf())
             plt.close()  # Clear figure to prevent overlap
         else:
-            st.error("No valid data available for heatmap. Check if METER_NUMBER values are present.")
+            st.error("No valid data available for heatmap. Check if ACCOUNT_NUMBER values are present.")
     else:
-        st.error("No valid METER_NUMBER values for heatmap. Check if METER_NUMBER contains non-empty values.")
+        st.error("No valid ACCOUNT_NUMBER values for heatmap. Check if ACCOUNT_NUMBER contains non-empty values.")
 else:
     st.error("No customers or MD-owned DT found. Check if NAME_OF_DT in Customer Data matches New Unique DT Nomenclature in Transformer Data.")
 
 # Customer List
 st.subheader(f"Customers under {selected_dt_name} ({selected_feeder_name})")
 if not filtered_customers.empty:
-    styled_df = filtered_customers[["METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "ENERGY_BILLED (kWh)", 
+    styled_df = filtered_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "ENERGY_BILLED (kWh)", 
                                    "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", 
                                    "feeder_score", "dt_score", "meter_status_score", 
                                    "account_type_score", "customer_account_type_score", 
@@ -335,6 +338,13 @@ total_financial_loss = filtered_dt[filtered_dt["New Unique DT Nomenclature"] == 
 st.write(f"Total Energy Lost for {selected_dt_name} (June 2025): {total_energy_lost:,.2f} kWh")
 st.write(f"Total Financial Loss for {selected_dt_name} (June 2025): ₦{total_financial_loss:,.2f}")
 st.write(f"Estimated Yearly Savings per Feeder: ₦{total_financial_loss * 12:,.2f}")
+if not filtered_customers.empty:
+    st.write("Customer Details:")
+    summary_df = filtered_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "theft_probability", "risk_tier"]].copy()
+    summary_df["theft_probability"] = summary_df["theft_probability"].map("{:.3f}".format)
+    st.dataframe(summary_df)
+else:
+    st.write("No customer details available for this DT.")
 
 # Footer
 st.markdown("Built by Elvis for Ikeja Electric SIWES III. Field testing version, August 2025.")
