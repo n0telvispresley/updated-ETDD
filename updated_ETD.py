@@ -14,7 +14,7 @@ if uploaded_file is None:
     st.warning("Please upload an Excel file to proceed.")
     st.stop()
 
-# Load Excel file with dtype to preserve leading zeros
+# Load Excel file with dtype to preserve raw values
 try:
     sheets = pd.read_excel(
         uploaded_file,
@@ -39,13 +39,13 @@ if feeder_df is None or dt_df is None or customer_df is None:
     st.error("One or more sheets (Feeder Data, Transformer Data, Customer Data) not found.")
     st.stop()
 
-# Clean apostrophes and ensure string type
-feeder_df["Feeder"] = feeder_df["Feeder"].astype(str).str.lstrip("'")
-dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].astype(str).str.lstrip("'")
-dt_df["DT Number"] = dt_df["DT Number"].astype(str).str.lstrip("'")
-customer_df["NAME_OF_DT"] = customer_df["NAME_OF_DT"].astype(str).str.lstrip("'")
-customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str).str.lstrip("'")
-customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str).str.lstrip("'")
+# Ensure string type for key columns (no apostrophe stripping)
+feeder_df["Feeder"] = feeder_df["Feeder"].astype(str)
+dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].astype(str)
+dt_df["DT Number"] = dt_df["DT Number"].astype(str)
+customer_df["NAME_OF_DT"] = customer_df["NAME_OF_DT"].astype(str)
+customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str)
+customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str)
 
 # Debug: Show sheet names and column info
 if st.checkbox("Show debug info"):
