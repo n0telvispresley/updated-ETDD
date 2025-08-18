@@ -33,12 +33,18 @@ if st.checkbox("Show debug info"):
         st.write("Customer columns:", customer_df.columns.tolist())
         st.write("NAME_OF_DT data type:", customer_df["NAME_OF_DT"].dtype)
         st.write("Sample NAME_OF_DT values:", customer_df["NAME_OF_DT"].head().tolist())
+        st.write("NAME_OF_FEEDER data type:", customer_df["NAME_OF_FEEDER"].dtype)
+        st.write("Sample NAME_OF_FEEDER values:", customer_df["NAME_OF_FEEDER"].head().tolist())
         st.write("METER_NUMBER data type:", customer_df["METER_NUMBER"].dtype)
         st.write("Sample METER_NUMBER values:", customer_df["METER_NUMBER"].head().tolist())
     if dt_df is not None:
         st.write("DT columns:", dt_df.columns.tolist())
         st.write("New Unique DT Nomenclature data type:", dt_df["New Unique DT Nomenclature"].dtype)
         st.write("Sample New Unique DT Nomenclature values:", dt_df["New Unique DT Nomenclature"].head().tolist())
+    if feeder_df is not None:
+        st.write("Feeder columns:", feeder_df.columns.tolist())
+        st.write("Feeder data type:", feeder_df["Feeder"].dtype)
+        st.write("Sample Feeder values:", feeder_df["Feeder"].head().tolist())
 
 # Check if sheets loaded correctly
 if feeder_df is None or dt_df is None or customer_df is None:
@@ -55,11 +61,11 @@ dt_df["month"] = "June 2025"
 
 # Ensure consistent data types for merges
 customer_df["NAME_OF_DT"] = customer_df["NAME_OF_DT"].astype(str)
+customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str)
+customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str)
 dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].astype(str)
 dt_df["DT Number"] = dt_df["DT Number"].astype(str)
 feeder_df["Feeder"] = feeder_df["Feeder"].astype(str)
-customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str)
-customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str)
 
 # Extract feeder names from Feeder Data
 feeder_names = feeder_df["Feeder"].tolist()
