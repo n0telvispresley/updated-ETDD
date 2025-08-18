@@ -338,13 +338,6 @@ total_financial_loss = filtered_dt[filtered_dt["New Unique DT Nomenclature"] == 
 st.write(f"Total Energy Lost for {selected_dt_name} (June 2025): {total_energy_lost:,.2f} kWh")
 st.write(f"Total Financial Loss for {selected_dt_name} (June 2025): ₦{total_financial_loss:,.2f}")
 st.write(f"Estimated Yearly Savings per Feeder: ₦{total_financial_loss * 12:,.2f}")
-if not filtered_customers.empty:
-    st.write("Customer Details:")
-    summary_df = filtered_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "theft_probability", "risk_tier"]].copy()
-    summary_df["theft_probability"] = summary_df["theft_probability"].map("{:.3f}".format)
-    st.dataframe(summary_df)
-else:
-    st.write("No customer details available for this DT.")
 
 # Footer
 st.markdown("Built by Elvis for Ikeja Electric SIWES III. Field testing version, August 2025.")
