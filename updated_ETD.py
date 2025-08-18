@@ -34,6 +34,19 @@ feeder_df = sheets.get("Feeder Data")
 dt_df = sheets.get("Transformer Data")
 customer_df = sheets.get("Customer Data")
 
+# Check if sheets loaded correctly
+if feeder_df is None or dt_df is None or customer_df is None:
+    st.error("One or more sheets (Feeder Data, Transformer Data, Customer Data) not found.")
+    st.stop()
+
+# Clean apostrophes and ensure string type
+feeder_df["Feeder"] = feeder_df["Feeder"].astype(str).str.lstrip("'")
+dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].astype(str).str.lstrip("'")
+dt_df["DT Number"] = dt_df["DT Number"].astype(str).str.lstrip("'")
+customer_df["NAME_OF_DT"] = customer_df["NAME_OF_DT"].astype(str).str.lstrip("'")
+customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str).str.lstrip("'")
+customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str).str.lstrip("'")
+
 # Debug: Show sheet names and column info
 if st.checkbox("Show debug info"):
     st.write("Available sheets:", list(sheets.keys()))
@@ -56,11 +69,6 @@ if st.checkbox("Show debug info"):
         st.write("Feeder data type:", feeder_df["Feeder"].dtype)
         st.write("Sample Feeder values:", feeder_df["Feeder"].head().tolist())
 
-# Check if sheets loaded correctly
-if feeder_df is None or dt_df is None or customer_df is None:
-    st.error("One or more sheets (Feeder Data, Transformer Data, Customer Data) not found.")
-    st.stop()
-
 # Data preprocessing
 # Convert Feeder energy to kWh
 feeder_df["June Energy (kWh)"] = feeder_df["June Energy (MWh)"] * 1000
@@ -68,14 +76,6 @@ feeder_df["June Energy (kWh)"] = feeder_df["June Energy (MWh)"] * 1000
 # Add month column for heatmap
 customer_df["month"] = "June 2025"
 dt_df["month"] = "June 2025"
-
-# Ensure consistent data types (already handled in read_excel, but reinforce)
-customer_df["NAME_OF_DT"] = customer_df["NAME_OF_DT"].astype(str)
-customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str)
-customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str)
-dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].astype(str)
-dt_df["DT Number"] = dt_df["DT Number"].astype(str)
-feeder_df["Feeder"] = feeder_df["Feeder"].astype(str)
 
 # Extract feeder names from Feeder Data
 feeder_names = feeder_df["Feeder"].tolist()
