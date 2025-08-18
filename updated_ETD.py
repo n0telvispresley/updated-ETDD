@@ -7,6 +7,12 @@ import seaborn as sns
 # Set Streamlit page config
 st.set_page_config(page_title="IE Energy Theft Detection Dashboard", layout="wide")
 
+# Custom converter to preserve exact string values
+def preserve_exact_string(value):
+    if pd.isna(value) or value is None:
+        return ""  # Convert NaN or None to empty string
+    return str(value)  # Preserve exact string, including apostrophes
+
 # File uploader
 st.subheader("Upload Excel File")
 uploaded_file = st.file_uploader("Choose an Excel file (.xlsx)", type=["xlsx"])
@@ -20,9 +26,9 @@ try:
         uploaded_file,
         sheet_name=None,
         converters={
-            "Feeder Data": {"Feeder": str},
-            "Transformer Data": {"New Unique DT Nomenclature": str, "DT Number": str},
-            "Customer Data": {"NAME_OF_DT": str, "NAME_OF_FEEDER": str, "METER_NUMBER": str}
+            "Feeder Data": {"Feeder": preserve_exact_string},
+            "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "DT Number": preserve_exact_string},
+            "Customer Data": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "METER_NUMBER": preserve_exact_string}
         }
     )
 except Exception as e:
@@ -39,13 +45,13 @@ if feeder_df is None or dt_df is None or customer_df is None:
     st.error("One or more sheets (Feeder Data, Transformer Data, Customer Data) not found.")
     st.stop()
 
-# Handle NaN values and ensure string type
-feeder_df["Feeder"] = feeder_df["Feeder"].astype(str).replace("nan", "Unknown")
-dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].astype(str).replace("nan", "Unknown")
-dt_df["DT Number"] = dt_df["DT Number"].astype(str).replace("nan", "Unknown")
-customer_df["NAME_OF_DT"] = customer_df["NAME_OF_DT"].astype(str).replace("nan", "Unknown")
-customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str).replace("nan", "Unknown")
-customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str).replace("nan", "Unknown")
+# Ensure string type for key columns (no alterations)
+feeder_df["Feeder"] = feeder_df["Feeder"].astype(str)
+dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].astype(str)
+dt_df["DT Number"] = dt_df["DT Number"].astype(str)
+customer_df["NAME_OF_DT"] = customer_df["NAME_OF_DT"].astype(str)
+customer_df["NAME_OF_FEEDER"] = customer_df["NAME_OF_FEEDER"].astype(str)
+customer_df["METER_NUMBER"] = customer_df["METER_NUMBER"].astype(str)
 
 # Debug: Show sheet names and column info
 if st.checkbox("Show debug info"):
@@ -58,12 +64,16 @@ if st.checkbox("Show debug info"):
         st.write("Sample NAME_OF_FEEDER values:", customer_df["NAME_OF_FEEDER"].head().tolist())
         st.write("METER_NUMBER data type:", customer_df["METER_NUMBER"].dtype)
         st.write("Sample METER_NUMBER values:", customer_df["METER_NUMBER"].head().tolist())
+        st.write("Count of empty METER_NUMBER:", (customer_df["METER_NUMBER"] == "").sum())
+        st.write("Count of non-empty METER_NUMBER:", (customer_df["METER_NUMBER"] != "").sum())
     if dt_df is not None:
         st.write("DT columns:", dt_df.columns.tolist())
         st.write("New Unique DT Nomenclature data type:", dt_df["New Unique DT Nomenclature"].dtype)
         st.write("Sample New Unique DT Nomenclature values:", dt_df["New Unique DT Nomenclature"].head().tolist())
         st.write("DT Number data type:", dt_df["DT Number"].dtype)
         st.write("Sample DT Number values:", dt_df["DT Number"].head().tolist())
+        st.write("Count of empty DT Number:", (dt_df["DT Number"] == "").sum())
+        st.write("Count of non-empty DT Number:", (dt_df["DT Number"] != "").sum())
     if feeder_df is not None:
         st.write("Feeder columns:", feeder_df.columns.tolist())
         st.write("Feeder data type:", feeder_df["Feeder"].dtype)
@@ -209,6 +219,7 @@ filtered_dt = dt_merged[dt_merged["New Unique DT Nomenclature"] == selected_dt_n
 if st.checkbox("Debug: Show filtered customers info"):
     st.write(f"Filtered customers count: {len(filtered_customers)}")
     st.write("Filtered customers sample:", filtered_customers.head())
+    st.write("Unique METER_NUMBER values:", filtered_customers["METER_NUMBER"].unique().tolist())
 
 # Add feeder_score and dt_score to filtered_customers
 filtered_customers = filtered_customers.merge(feeder_merged[["Feeder", "feeder_score"]], 
@@ -255,6 +266,8 @@ if not filtered_customers.empty:
         file_name=f"theft_analysis_{selected_dt_name}_{selected_feeder_name}.csv",
         mime="text/csv"
     )
+else:
+    st.warning("No customers found for the selected DT. Check data consistency.")
 
 # Number of customers to display in heatmap
 st.subheader("Heatmap Settings")
@@ -274,19 +287,24 @@ if not filtered_customers.empty:
         heatmap_data = filtered_customers
     else:
         heatmap_data = filtered_customers.head(num_customers)
-    pivot_data = heatmap_data.pivot_table(index="METER_NUMBER", columns="month", values="theft_probability", aggfunc="mean")
-    if not pivot_data.empty:
-        plt.figure(figsize=(8, 6))
-        sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
-        plt.xlabel("Month")
-        plt.ylabel("Meter Number")
-        plt.title(f"Theft Probability for {selected_dt_name} ({selected_feeder_name}, June 2025)")
-        plt.xticks(rotation=45, ha="right")
-        plt.tight_layout()
-        st.pyplot(plt.gcf())
-        plt.close()  # Clear figure to prevent overlap
+    # Ensure METER_NUMBER is not empty for heatmap
+    heatmap_data = heatmap_data[heatmap_data["METER_NUMBER"] != ""]
+    if not heatmap_data.empty:
+        pivot_data = heatmap_data.pivot_table(index="METER_NUMBER", columns="month", values="theft_probability", aggfunc="mean")
+        if not pivot_data.empty:
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
+            plt.xlabel("Month")
+            plt.ylabel("Meter Number")
+            plt.title(f"Theft Probability for {selected_dt_name} ({selected_feeder_name}, June 2025)")
+            plt.xticks(rotation=45, ha="right")
+            plt.tight_layout()
+            st.pyplot(plt.gcf())
+            plt.close()  # Clear figure to prevent overlap
+        else:
+            st.error("No valid data available for heatmap. Check if METER_NUMBER values are present.")
     else:
-        st.error("No data available for heatmap. Check if customers or MD-owned DT exist for the selected DT.")
+        st.error("No valid METER_NUMBER values for heatmap. Check if METER_NUMBER contains non-empty values.")
 else:
     st.error("No customers or MD-owned DT found. Check if NAME_OF_DT in Customer Data matches New Unique DT Nomenclature in Transformer Data.")
 
