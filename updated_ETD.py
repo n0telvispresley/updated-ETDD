@@ -69,7 +69,7 @@ for df, name in [(ppm_df, "Customer Data_PPM"), (ppd_df, "Customer Data_PPD")]:
         df["TARIFF"] = ""
 if "BAND" not in band_df.columns:
     st.error(f"Column 'BAND' not found in Feeder Band. Available columns: {band_df.columns.tolist()}")
-    band_df["BAND"] = ""  # Fallback: empty BAND column
+    st.stop()
 if "Feeder" not in band_df.columns:
     st.error(f"Column 'Feeder' not found in Feeder Band. Available columns: {band_df.columns.tolist()}")
     st.stop()
@@ -78,7 +78,7 @@ if "Short Name" not in band_df.columns:
     st.stop()
 if "Tariff" not in tariff_df.columns:
     st.error(f"Column 'Tariff' not found in Customer Tariffs. Available columns: {tariff_df.columns.tolist()}")
-    tariff_df["Tariff"] = ""
+    st.stop()
 
 # Handle Rate column variants in tariff_df
 rate_variants = ["Rate (NGN)", "Rate (₦)", "Rate", "RATE", "Rate(NGN)", "Rate(₦)"]
@@ -93,8 +93,8 @@ if rate_col:
         st.warning(f"Found '{rate_col}' in Customer Tariffs. Renaming to 'Rate (NGN)'.")
         tariff_df = tariff_df.drop(columns=[rate_col], errors="ignore")
 else:
-    st.warning(f"No rate column found in Customer Tariffs. Available columns: {tariff_df.columns.tolist()}. Creating 'Rate (NGN)' with default 209.5.")
-    tariff_df["Rate (NGN)"] = 209.5
+    st.error(f"No rate column found in Customer Tariffs. Available columns: {tariff_df.columns.tolist()}. Required for theft detection.")
+    st.stop()
 
 # Normalize feeder, DT, and tariff names
 feeder_df["Feeder"] = feeder_df["Feeder"].str.strip().str.upper()
@@ -266,15 +266,18 @@ feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost
 # Debug: Check merge inputs
 if st.checkbox("Debug: Merge inputs"):
     st.write("customer_monthly NAME_OF_DT unique values:", sorted(customer_monthly["NAME_OF_DT"].dropna().astype(str).unique()))
+    st.write("dt_agg New Unique DT Nomenclature unique values:", sorted(dt_agg["New Unique DT Nomenclature"].dropna().astype(str).unique()))
     st.write("dt_merged New Unique DT Nomenclature unique values:", sorted(dt_merged["New Unique DT Nomenclature"].dropna().astype(str).unique()))
     st.write("customer_monthly NAME_OF_FEEDER unique values:", sorted(customer_monthly["NAME_OF_FEEDER"].dropna().astype(str).unique()))
     st.write("feeder_merged Feeder unique values:", sorted(feeder_merged["Feeder"].dropna().astype(str).unique()))
     st.write("customer_monthly month unique values:", customer_monthly["month"].unique().tolist())
     st.write("dt_merged month unique values:", dt_merged["month"].unique().tolist())
+    st.write("dt_agg columns:", dt_agg.columns.tolist())
+    st.write("dt_merged columns:", dt_merged.columns.tolist())
     st.write("feeder_merged columns:", feeder_merged.columns.tolist())
+    st.write("Sample dt_merged dt_score values:", dt_merged["dt_score"].head().tolist() if "dt_score" in dt_merged.columns else "dt_score missing")
     st.write("Sample feeder_merged Short Name values:", feeder_merged["Short Name"].head().tolist())
     st.write("Sample feeder_merged BAND values:", feeder_merged["BAND"].head().tolist())
-    st.write("Sample dt_merged dt_score values:", dt_merged["dt_score"].head().tolist())
 
 # Streamlit UI
 st.title("Ikeja Electric Energy Theft Detection Dashboard")
@@ -293,19 +296,10 @@ with col3:
     band_options = ["All"] + sorted(band_df["BAND"].dropna().astype(str).unique())
     selected_band = st.selectbox("Select Band", band_options)
 with col4:
-    if selected_band == "All":
-        feeder_options = band_df[band_df["Feeder"].isin(customer_df["NAME_OF_FEEDER"])]["Short Name"].dropna().astype(str).tolist()
-        if not feeder_options:
-            feeder_options = band_df["Short Name"].dropna().astype(str).tolist()
-            st.warning("No feeders match NAME_OF_FEEDER. Showing all feeders from Feeder Band.")
-    else:
-        feeder_options = band_df[(band_df["BAND"] == selected_band) & (band_df["Feeder"].isin(customer_df["NAME_OF_FEEDER"]))]["Short Name"].dropna().astype(str).tolist()
-        if not feeder_options:
-            feeder_options = band_df[band_df["BAND"] == selected_band]["Short Name"].dropna().astype(str).tolist()
-            st.warning(f"No feeders match NAME_OF_FEEDER for band {selected_band}. Showing all feeders for this band.")
+    feeder_options = band_df[band_df["Feeder"].isin(customer_df["NAME_OF_FEEDER"])]["Short Name"].dropna().astype(str).tolist()
     if not feeder_options:
-        st.error("No feeders available for the selected band, business unit, or undertaking.")
-        st.stop()
+        feeder_options = band_df["Short Name"].dropna().astype(str).tolist()
+        st.warning("No feeders match NAME_OF_FEEDER. Showing all feeders from Feeder Band.")
     feeder_options = sorted(feeder_options)
     selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
     selected_feeder = band_df[band_df["Short Name"] == selected_feeder_short]["Feeder"].iloc[0] if selected_feeder_short else None
@@ -314,7 +308,7 @@ with col5:
     dt_options += [dt for dt in dt_df[dt_df["Flag"]]["DT_Short_Name"].dropna().astype(str).tolist() if dt not in dt_options]
     dt_options = sorted(dt_options)
     if not dt_options:
-        st.error(f"No DTs available for feeder {selected_feeder_short}. Check NAME_OF_FEEDER in Customer Data.")
+        st.error(f"No DTs available for feeder {selected_feeder_short}. Check NAME_OF_FEEDER and NAME_OF_DT in Customer Data.")
         st.stop()
     dt_short_to_full = {get_dt_short_name(dt): dt for dt in customer_df[customer_df["NAME_OF_FEEDER"] == selected_feeder]["NAME_OF_DT"].dropna().astype(str).unique()}
     dt_short_to_full.update({get_dt_short_name(dt): dt for dt in dt_df[dt_df["Flag"]]["New Unique DT Nomenclature"].dropna().astype(str)})
@@ -349,19 +343,24 @@ if st.checkbox("Debug: Filtered data"):
 # DT Theft Probability Heatmap
 st.subheader("DT Theft Probability Heatmap")
 filtered_dt_agg = dt_agg[dt_agg["New Unique DT Nomenclature"].isin(filtered_customer_df[filtered_customer_df["NAME_OF_FEEDER"] == selected_feeder]["NAME_OF_DT"].unique()) | dt_agg["Flag"]]
-dt_pivot = filtered_dt_agg.pivot_table(index="New Unique DT Nomenclature", columns="month", values="dt_score" if "dt_score" in dt_merged.columns else "total_dt_kwh", aggfunc="mean")
+if filtered_dt_agg.empty:
+    st.error(f"No DT data available for feeder {selected_feeder_short}. Check NAME_OF_FEEDER and NAME_OF_DT in Customer Data.")
+    st.stop()
+pivot_values = "dt_score" if "dt_score" in filtered_dt_agg.columns else "total_dt_kwh"
+dt_pivot = filtered_dt_agg.pivot_table(index="New Unique DT Nomenclature", columns="month", values=pivot_values, aggfunc="mean")
 if not dt_pivot.empty:
     plt.figure(figsize=(10, 8))
-    sns.heatmap(dt_pivot, cmap="YlOrRd", cbar_kws={"label": "DT Theft Score" if "dt_score" in dt_merged.columns else "Total DT kWh"})
+    sns.heatmap(dt_pivot, cmap="YlOrRd", cbar_kws={"label": "DT Theft Score" if pivot_values == "dt_score" else "Total DT kWh"})
     plt.xlabel("Month")
     plt.ylabel("DT Name")
-    plt.title(f"DT {'Theft Score' if 'dt_score' in dt_merged.columns else 'Energy Consumption'} for Feeder {selected_feeder_short} (January–June 2025)")
+    plt.title(f"DT {'Theft Score' if pivot_values == 'dt_score' else 'Energy Consumption'} for Feeder {selected_feeder_short} (January–June 2025)")
     plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
     st.pyplot(plt.gcf())
     plt.close()
 else:
-    st.error(f"No DT data available for feeder {selected_feeder_short}. Check NAME_OF_DT in Customer Data and Feeder in Feeder Band.")
+    st.error(f"No DT data available for feeder {selected_feeder_short} after pivoting. Check NAME_OF_DT and New Unique DT Nomenclature consistency.")
+    st.stop()
 
 # Handle MD-owned DTs
 dt_no_customers = dt_merged[~dt_merged["New Unique DT Nomenclature"].isin(customer_df["NAME_OF_DT"])]
@@ -422,14 +421,14 @@ feeder_summary["Short Name"] = feeder_summary["Short Name"].fillna(feeder_summar
 feeder_summary = feeder_summary[feeder_summary["Feeder"].isin(filtered_customer_df["NAME_OF_FEEDER"])]
 if feeder_summary.empty:
     st.error("No feeders match the selected filters. Check NAME_OF_FEEDER in Customer Data and Feeder in Feeder Band.")
-else:
-    feeder_pivot = feeder_summary.pivot_table(
-        index=["Short Name", "BAND"],
-        columns="month",
-        values=["feeder_energy_lost_kwh", "feeder_financial_loss_naira"],
-        aggfunc="sum"
-    ).fillna(0)
-    st.dataframe(feeder_pivot.style.format("{:,.2f}"))
+    st.stop()
+feeder_pivot = feeder_summary.pivot_table(
+    index=["Short Name", "BAND"],
+    columns="month",
+    values=["feeder_energy_lost_kwh", "feeder_financial_loss_naira"],
+    aggfunc="sum"
+).fillna(0)
+st.dataframe(feeder_pivot.style.format("{:,.2f}"))
 
 # Customer Heatmap Settings
 st.subheader("Customer Heatmap Settings")
@@ -464,6 +463,7 @@ if not pivot_data.empty:
     plt.close()
 else:
     st.error("No valid data for customer heatmap. Check ACCOUNT_NUMBER and NAME_OF_DT consistency.")
+    st.stop()
 
 # Customer List
 st.subheader(f"Customers under {selected_dt_name} ({selected_feeder_short}, {selected_month})")
@@ -503,6 +503,7 @@ if not month_customers.empty:
     st.dataframe(styled_df)
 else:
     st.error("No customers found for the selected DT and month.")
+    st.stop()
 
 # CSV Export
 st.subheader("Export Customer Data")
@@ -536,6 +537,7 @@ if not summary_data.empty:
     st.write(f"Average Monthly Financial Loss: ₦{avg_financial_loss:,.2f}")
 else:
     st.error("No data available for Summary Report.")
+    st.stop()
 
 # Unbilled Energy Accuracy
 st.subheader("Unbilled Energy Accuracy Check")
