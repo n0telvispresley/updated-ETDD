@@ -325,7 +325,7 @@ for month in months:
         else:
             df[col] = 0
     if month in dt_df.columns:
-        dt_df[f"{month} (kWh)"] = pd.to_numeric(df[month], errors="coerce").fillna(0) / 1000
+        dt_df[f"{month} (kWh)"] = pd.to_numeric(dt_df[month], errors="coerce").fillna(0) / 1000
     else:
         dt_df[f"{month} (kWh)"] = 0
 for df in [feeder_df, dt_df, ppm_df, ppd_df]:
@@ -346,6 +346,7 @@ for col in value_vars:
 try:
     customer_monthly = customer_df.melt(id_vars=required_id_vars, value_vars=value_vars, var_name="month", value_name="billed_kwh")
     customer_monthly["month"] = customer_monthly["month"].str.replace(" (kWh)", "")
+    customer_monthly["month"] = pd.Categorical(customer_monthly["month"], categories=months, ordered=True)
 except Exception as e:
     st.error(f"Melt failed: {e}")
     st.write("customer_df Columns:", customer_df.columns.tolist())
@@ -355,6 +356,7 @@ except Exception as e:
 try:
     dt_agg_monthly = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
     dt_agg_monthly["month"] = dt_agg_monthly["month"].str.replace(" (kWh)", "")
+    dt_agg_monthly["month"] = pd.Categorical(dt_agg_monthly["month"], categories=months, ordered=True)
 except Exception as e:
     st.error(f"DT melt failed: {e}")
     st.write("dt_df Columns:", dt_df.columns.tolist())
@@ -437,6 +439,7 @@ except Exception as e:
 try:
     feeder_monthly = feeder_df.melt(id_vars=["Feeder", "Feeder_Short", "Tariff_Rate"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
     feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
+    feeder_monthly["month"] = pd.Categorical(feeder_monthly["month"], categories=months, ordered=True)
     feeder_monthly = feeder_monthly[feeder_monthly["month"].isin(selected_months)]
     feeder_agg = feeder_monthly.groupby(["Feeder", "Feeder_Short", "Tariff_Rate"])["feeder_energy_kwh"].sum().reset_index()
 except Exception as e:
@@ -529,7 +532,7 @@ try:
         st.error("month column missing in filtered_dt_agg")
         st.write("filtered_dt_agg Columns:", filtered_dt_agg.columns.tolist())
         st.stop()
-    dt_pivot = filtered_dt_agg.pivot_table(index="DT_Short_Name", columns="month", values="dt_score", aggfunc="mean")
+    dt_pivot = filtered_dt_agg.pivot_table(index="DT_Short_Name", columns="month", values="dt_score", aggfunc="mean").reindex(columns=months)
     if not dt_pivot.empty:
         plt.figure(figsize=(10, 8))
         sns.heatmap(dt_pivot, cmap="YlOrRd", cbar_kws={"label": "DT Theft Score"})
@@ -575,7 +578,7 @@ try:
     num_customers = st.number_input("Number of high-risk customers (0 for all)", min_value=0, value=10, step=1)
     if num_customers > 0:
         filtered_customers = filtered_customers.sort_values(by="theft_probability", ascending=False).head(num_customers)
-    pivot_data = filtered_customers.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean")
+    pivot_data = filtered_customers.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean").reindex(columns=months)
     if not pivot_data.empty:
         plt.figure(figsize=(10, 8))
         sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
