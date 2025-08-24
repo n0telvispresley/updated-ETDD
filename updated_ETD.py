@@ -19,8 +19,10 @@ def get_short_name(name, is_dt=False):
         parts = name.split("-")
         if is_dt:
             return parts[-1].strip()  # DT name is last part
-        if len(parts) >= 2:
-            return parts[-2].strip() if len(parts) > 2 else parts[-1].strip()  # Feeder_Short is second-to-last or last
+        # Feeder_Short: second-to-last part if >= 3 parts, else last part
+        if len(parts) >= 3:
+            return parts[-2].strip()
+        return parts[-1].strip()
     return name if isinstance(name, str) else ""
 
 # File uploader
@@ -62,7 +64,7 @@ if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_d
     st.stop()
 
 # Validate column names
-required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT"]
+required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT", "TARIFF"]
 required_dt_cols = ["New Unique DT Nomenclature"]
 required_feeder_cols = ["Feeder"]
 for df, name, cols in [(ppm_df, "Customer Data_PPM", required_customer_cols), (ppd_df, "Customer Data_PPD", required_customer_cols), (dt_df, "Transformer Data", required_dt_cols), (feeder_df, "Feeder Data", required_feeder_cols)]:
@@ -111,10 +113,18 @@ customer_df["customer_category_score"] = customer_df["CUSTOMER_CATEGORY"].map({"
 # Create short names
 feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(get_short_name)
 dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: get_short_name(x, is_dt=True))
-dt_df["Feeder_Short"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: x.split("-")[-2].strip() if isinstance(x, str) and "-" in x and len(x.split("-")) >= 2 else x)
+dt_df["Feeder_Short"] = dt_df["New Unique DT Nomenclature"].apply(
+    lambda x: x.split("-")[-2].strip() if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
+)
 dt_df["NAME_OF_DT"] = dt_df["New Unique DT Nomenclature"]
 customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True))
 customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(get_short_name)
+
+# Map numeric Feeder_Short in dt_df to valid feeder names
+valid_feeders_short = set(feeder_df["Feeder_Short"].astype(str).str.strip().str.upper())
+dt_df["Feeder_Short"] = dt_df["Feeder_Short"].apply(
+    lambda x: x if x in valid_feeders_short else "UNKNOWN"
+)
 
 # Filter customer_df for valid feeders
 valid_feeders = set(feeder_df["Feeder"].astype(str).str.strip().str.upper())
@@ -124,6 +134,9 @@ if missing_feeders:
 customer_df = customer_df[customer_df["NAME_OF_FEEDER"].isin(valid_feeders)]
 
 # Merge tariffs
+tariff_matches = customer_df["TARIFF"].isin(tariff_df["Tariff"])
+if not tariff_matches.all():
+    st.warning(f"Some TARIFF values in customer data not found in Customer Tariffs: {customer_df[~tariff_matches]['TARIFF'].unique()}")
 customer_df = customer_df.merge(tariff_df[["Tariff", "Rate (NGN)"]], left_on="TARIFF", right_on="Tariff", how="left")
 customer_df["Rate (NGN)"] = customer_df["Rate (NGN)"].fillna(209.5)
 customer_df = customer_df.drop(columns=["Tariff"], errors="ignore")
@@ -137,7 +150,7 @@ if st.checkbox("Debug: Data"):
     st.write("customer_df Columns:", customer_df.columns.tolist())
     st.write("customer_monthly Columns:", customer_monthly.columns.tolist() if 'customer_monthly' in locals() else "customer_monthly not created yet")
     st.write("dt_agg Columns:", dt_agg.columns.tolist() if 'dt_agg' in locals() else "dt_agg not created yet")
-    st.write("filtered_dt_agg:", filtered_dt_agg if 'filtered_dt_agg' in locals() else "filtered_dt_agg not created yet")
+    st.write("dt_merged:", dt_merged.head() if 'dt_merged' in locals() else "dt_merged not created yet")
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -158,9 +171,10 @@ for df in [feeder_df, dt_df, ppm_df, ppd_df]:
 # Ensure required columns for melt
 required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "Feeder_Short", "Rate (NGN)", "meter_status_score", "account_type_score", "customer_account_type_score", "billing_type_score", "customer_category_score"]
 value_vars = [f"{m} (kWh)" for m in months]
-for col in required_id_vars:
-    if col not in customer_df.columns:
-        customer_df[col] = 0 if col.endswith("_score") else ""
+missing_id_vars = [col for col in required_id_vars if col not in customer_df.columns]
+if missing_id_vars:
+    st.error(f"Missing id_vars in customer_df: {missing_id_vars}")
+    st.stop()
 for col in value_vars:
     if col not in customer_df.columns:
         customer_df[col] = 0
@@ -214,7 +228,7 @@ with col2:
         st.error(f"No DTs available for feeder {selected_feeder_short}. Check New Unique DT Nomenclature in Transformer Data.")
         st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
         st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
-        st.write("filtered_dt_agg:", filtered_dt_agg if 'filtered_dt_agg' in locals() else "not created")
+        st.write("dt_df Head:", dt_df.head())
         st.stop()
     selected_dt_short = st.selectbox("Select DT", dt_options)
 with col3:
@@ -227,6 +241,7 @@ filtered_dt_agg = dt_agg[dt_agg["Feeder_Short"] == selected_feeder_short.replace
 if filtered_dt_agg.empty:
     st.error(f"No DT data for feeder {selected_feeder_short}.")
     st.write("dt_agg:", dt_agg.head())
+    st.write("dt_merged:", dt_merged.head())
     st.stop()
 filtered_dt_agg = filtered_dt_agg.merge(dt_merged[["New Unique DT Nomenclature", "month", "dt_score"]], on=["New Unique DT Nomenclature", "month"], how="left")
 filtered_dt_agg["dt_score"] = filtered_dt_agg["dt_score"].fillna(0)
@@ -239,7 +254,7 @@ if not dt_pivot.empty:
     plt.close()
 else:
     st.error(f"No DT data for {selected_feeder_short} after pivoting.")
-    st.write("filtered_dt_agg:", filtered_dt_agg)
+    st.write("filtered_dt_agg:", filtered_dt_agg.head())
     st.stop()
 
 # Customer scores
