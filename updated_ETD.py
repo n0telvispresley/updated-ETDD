@@ -286,6 +286,9 @@ if st.checkbox("Debug: Data"):
     st.write("customer_monthly Columns:", customer_monthly.columns.tolist() if 'customer_monthly' in locals() else "customer_monthly not created yet")
     st.write("dt_agg Columns:", dt_agg.columns.tolist() if 'dt_agg' in locals() else "dt_agg not created yet")
     st.write("dt_merged:", dt_merged.head() if 'dt_merged' in locals() else "dt_merged not created yet")
+    st.write("feeder_monthly:", feeder_monthly.head() if 'feeder_monthly' in locals() else "feeder_monthly not created yet")
+    st.write("feeder_agg:", feeder_agg.head() if 'feeder_agg' in locals() else "feeder_agg not created yet")
+    st.write("feeder_merged:", feeder_merged.head() if 'feeder_merged' in locals() else "feeder_merged not created yet")
     st.write("Band Rates:", band_rates)
     st.write("Filtered Customer Count:", len(customer_df))
     st.write("Filtered DT Count:", len(dt_df))
@@ -313,7 +316,7 @@ for month in months:
         else:
             df[col] = 0
     if month in dt_df.columns:
-        dt_df[f"{month} (kWh)"] = pd.to_numeric(dt_df[month], errors="coerce").fillna(0) / 1000
+        dt_df[f"{month} (kWh)"] = pd.to_numeric(df[month], errors="coerce").fillna(0) / 1000
     else:
         dt_df[f"{month} (kWh)"] = 0
 for df in [feeder_df, dt_df, ppm_df, ppd_df]:
@@ -401,14 +404,19 @@ except Exception as e:
 # Feeder Summary Table
 st.subheader("Feeder Summary")
 try:
-    feeder_summary = feeder_merged.groupby(["Feeder_Short", "month"]).agg({
-        "feeder_energy_kwh": "sum",
-        "total_billed_kwh": "sum",
-        "feeder_energy_lost_kwh": "sum",
-        "feeder_financial_loss_naira": "sum"
-    }).reset_index()
+    required_cols = ["Feeder_Short", "month", "feeder_energy_kwh", "total_billed_kwh", "feeder_energy_lost_kwh", "feeder_financial_loss_naira"]
+    missing_cols = [col for col in required_cols if col not in feeder_merged.columns]
+    if missing_cols:
+        st.error(f"Missing columns in feeder_merged: {missing_cols}")
+        st.write("feeder_merged Columns:", feeder_merged.columns.tolist())
+        st.stop()
+    if feeder_merged.empty:
+        st.error("feeder_merged is empty.")
+        st.write("feeder_monthly:", feeder_monthly.head())
+        st.write("feeder_agg:", feeder_agg.head())
+        st.stop()
+    feeder_summary = feeder_merged[required_cols].groupby(["Feeder_Short", "month"]).sum().reset_index()
     feeder_summary.columns = ["Feeder", "Month", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]
-    feeder_summary = feeder_summary["Feeder", "Month", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]
     if not feeder_summary.empty:
         st.dataframe(feeder_summary.style.format({
             "Energy Supplied (kWh)": "{:.2f}",
@@ -418,9 +426,10 @@ try:
         }))
     else:
         st.warning("No feeder summary data available.")
+        st.write("feeder_merged:", feeder_merged.head())
 except Exception as e:
     st.error(f"Feeder summary failed: {e}")
-    st.write("feeder_merged:", feeder_merged.head())
+    st.write("feeder_merged:", feeder_merged.head() if 'feeder_merged' in locals() else "feeder_merged not created")
     st.stop()
 
 # DT Summary Table
@@ -558,4 +567,3 @@ if not month_customers.empty:
 
 # Footer
 st.markdown("Built by Elvis for Ikeja Electric SIWES III. August 2025.")
-
