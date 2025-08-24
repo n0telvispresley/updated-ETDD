@@ -166,6 +166,7 @@ customer_df = customer_df[customer_df["NAME_OF_DT"].isin(valid_dts)]
 if customer_df.empty:
     st.error("No valid customers after filtering for Transformer Data DTs.")
     st.write("customer_df size:", len(customer_df))
+    st.write("valid_dts:", sorted(valid_dts))
     st.stop()
 
 # Create short names and feeder links
@@ -188,6 +189,7 @@ if dt_df.empty or customer_df.empty:
     st.error("No valid data after filtering for Feeder Data feeders.")
     st.write("dt_df size:", len(dt_df))
     st.write("customer_df size:", len(customer_df))
+    st.write("valid_feeders:", sorted(valid_feeders))
     st.stop()
 
 # Map DTs to feeder tariff rates
@@ -283,6 +285,7 @@ if dt_df.empty or customer_df.empty:
     st.error("No valid data after BU/UT filtering.")
     st.write("dt_df size:", len(dt_df))
     st.write("customer_df size:", len(customer_df))
+    st.write("valid_feeders:", sorted(valid_feeders))
     st.stop()
 
 # Debug
@@ -306,6 +309,12 @@ if st.checkbox("Debug: Data"):
     st.write("DT Energy Sample (kWh):", dt_df[[f"{m} (kWh)" for m in months]].head())
     st.write("PPM Energy Sample (kWh):", ppm_df[[f"{m} (kWh)" for m in months]].head())
     st.write("PPD Energy Sample (kWh):", ppd_df[[f"{m} (kWh)" for m in months]].head())
+    if selected_dt_short:
+        selected_dt_full = dt_df[dt_df["DT_Short_Name"] == selected_dt_short]["New Unique DT Nomenclature"].iloc[0] if not dt_df[dt_df["DT_Short_Name"] == selected_dt_short].empty else "Not found"
+        dt_customers = customer_monthly[customer_monthly["DT_Short_Name"] == selected_dt_short] if 'customer_monthly' in locals() else pd.DataFrame()
+        st.write(f"Customers for {selected_dt_short}:", dt_customers[["ACCOUNT_NUMBER", "month", "billed_kwh"]] if not dt_customers.empty else "No customers found")
+        st.write(f"Customer Billed kWh for {selected_dt_short} ({selected_dt_full}):", 
+                 customer_billed_monthly[customer_billed_monthly["NAME_OF_DT"] == selected_dt_full] if 'customer_billed_monthly' in locals() and selected_dt_full != "Not found" else "Not calculated yet")
 
 # Error Report Download
 if not error_report_df.empty:
@@ -322,7 +331,7 @@ if not error_report_df.empty:
 
 # Data preprocessing
 for month in months:
-    for df, unit in [(feeder_df, 1000), (ppm_df, 1), (ppd_df, 0.001)]:
+    for df, unit in [(feeder_df, 1000), (ppm_df, 1), (ppd_df, 1)]:
         col = f"{month} (kWh)"
         if month in df.columns:
             df[col] = pd.to_numeric(df[month], errors="coerce").fillna(0) * unit
@@ -519,6 +528,7 @@ try:
         }))
     else:
         st.warning(f"No DT summary data for {selected_feeder_short}.")
+        st.write("dt_merged:", dt_merged.head())
 except Exception as e:
     st.error(f"DT summary failed: {e}")
     st.write("dt_merged:", dt_merged.head())
