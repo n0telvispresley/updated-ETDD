@@ -19,8 +19,7 @@ def get_short_name(name, is_dt=False):
         parts = name.split("-")
         if is_dt:
             return parts[-1].strip()  # DT name is last part
-        # Feeder_Short: second-to-last part if >= 3 parts, else last part
-        return parts[-2].strip() if len(parts) >= 3 else parts[-1].strip()
+        return parts[-1].strip()  # Feeder_Short is last part
     return name if isinstance(name, str) else ""
 
 # File uploader
@@ -53,11 +52,10 @@ feeder_df = sheets.get("Feeder Data")
 dt_df = sheets.get("Transformer Data")
 ppm_df = sheets.get("Customer Data_PPM")
 ppd_df = sheets.get("Customer Data_PPD")
-band_df = sheets.get("Feeder Band")
 tariff_df = sheets.get("Customer Tariffs")
 
 # Check if sheets loaded correctly
-if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_df]):
+if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, tariff_df]):
     st.error("One or more sheets missing.")
     st.stop()
 
@@ -72,12 +70,9 @@ for df, name, cols in [(ppm_df, "Customer Data_PPM", required_customer_cols), (p
         st.stop()
 
 # Handle missing columns
-for df, col in [(ppm_df, "TARIFF"), (ppd_df, "TARIFF"), (band_df, "BAND"), (tariff_df, "Tariff")]:
+for df, col in [(ppm_df, "TARIFF"), (ppd_df, "TARIFF"), (tariff_df, "Tariff")]:
     if col not in df.columns:
         df[col] = ""
-if "Short Name" not in band_df.columns:
-    band_df["Short Name"] = band_df["Feeder"].apply(lambda x: get_short_name(x))
-
 # Handle Rate column
 rate_col = next((col for col in ["Rate (NGN)", "Rate (₦)", "Rate", "RATE", "Rate(NGN)", "Rate(₦)"] if col in tariff_df.columns), None)
 if rate_col:
@@ -87,7 +82,7 @@ else:
 
 # Normalize names
 for col, df in [
-    ("Feeder", feeder_df), ("NAME_OF_FEEDER", ppm_df), ("NAME_OF_FEEDER", ppd_df), ("Feeder", band_df),
+    ("Feeder", feeder_df), ("NAME_OF_FEEDER", ppm_df), ("NAME_OF_FEEDER", ppd_df),
     ("NAME_OF_DT", ppm_df), ("NAME_OF_DT", ppd_df), ("New Unique DT Nomenclature", dt_df),
     ("TARIFF", ppm_df), ("TARIFF", ppd_df), ("Tariff", tariff_df),
     ("BUSINESS_UNIT", ppm_df), ("BUSINESS_UNIT", ppd_df),
@@ -182,7 +177,6 @@ with col3:
         st.stop()
     selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
 with col4:
-    # Map selected_feeder_short to full Feeder name
     selected_feeder = feeder_df[feeder_df["Feeder_Short"] == selected_feeder_short]["Feeder"].iloc[0]
     dt_df_filtered = dt_df[dt_df["Feeder"] == selected_feeder]
     dt_options = sorted(dt_df_filtered["DT_Short_Name"].unique())
@@ -196,6 +190,36 @@ with col4:
 with col5:
     month_options = ["All"] + ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
     selected_month = st.selectbox("Select Month", month_options)
+
+# Dynamic Weight Sliders
+st.subheader("Adjust Theft Probability Weights")
+colw1, colw2, colw3, colw4 = st.columns(4)
+with colw1:
+    w_feeder = st.slider("Feeder Score Weight", 0.0, 1.0, 0.15, 0.01)
+    w_dt = st.slider("DT Score Weight", 0.0, 1.0, 0.25, 0.01)
+with colw2:
+    w_meter = st.slider("Meter Status Weight", 0.0, 1.0, 0.15, 0.01)
+    w_account = st.slider("Account Type Weight", 0.0, 1.0, 0.15, 0.01)
+with colw3:
+    w_customer_account = st.slider("Customer Account Type Weight", 0.0, 1.0, 0.15, 0.01)
+    w_billing = st.slider("Billing Type Weight", 0.0, 1.0, 0.15, 0.01)
+with colw4:
+    w_category = st.slider("Customer Category Weight", 0.0, 1.0, 0.10, 0.01)
+    w_energy = st.slider("Energy Billed Score Weight", 0.0, 1.0, 0.15, 0.01)
+
+# Normalize weights
+total_weight = w_feeder + w_dt + w_meter + w_account + w_customer_account + w_billing + w_category + w_energy
+if total_weight == 0:
+    st.error("Total weight cannot be zero. Please adjust weights.")
+    st.stop()
+w_feeder /= total_weight
+w_dt /= total_weight
+w_meter /= total_weight
+w_account /= total_weight
+w_customer_account /= total_weight
+w_billing /= total_weight
+w_category /= total_weight
+w_energy /= total_weight
 
 # Filter data by BU and UT
 customer_df = customer_df_ut
@@ -328,6 +352,55 @@ except Exception as e:
     st.write("feeder_agg:", feeder_agg.head())
     st.stop()
 
+# Feeder Summary Table
+st.subheader("Feeder Summary")
+try:
+    feeder_summary = feeder_merged.groupby(["Feeder_Short", "month"]).agg({
+        "feeder_energy_kwh": "sum",
+        "total_billed_kwh": "sum",
+        "feeder_energy_lost_kwh": "sum",
+        "feeder_financial_loss_naira": "sum"
+    }).reset_index()
+    feeder_summary.columns = ["Feeder", "Month", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]
+    feeder_summary = feeder_summary[["Feeder", "Month", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]]
+    if not feeder_summary.empty:
+        st.dataframe(feeder_summary.style.format({
+            "Energy Supplied (kWh)": "{:.2f}",
+            "Energy Billed (kWh)": "{:.2f}",
+            "Energy Unaccounted For (kWh)": "{:.2f}",
+            "Financial Loss (NGN)": "{:.2f}"
+        }))
+    else:
+        st.warning("No feeder summary data available.")
+except Exception as e:
+    st.error(f"Feeder summary failed: {e}")
+    st.write("feeder_merged:", feeder_merged.head())
+    st.stop()
+
+# DT Summary Table
+st.subheader(f"DT Summary for {selected_feeder_short}")
+try:
+    dt_summary = dt_merged[dt_merged["Feeder"] == selected_feeder].groupby(["DT_Short_Name", "month"]).agg({
+        "total_dt_kwh": "sum",
+        "total_billed_kwh": "sum",
+        "energy_lost_kwh": "sum",
+        "financial_loss_naira": "sum"
+    }).reset_index()
+    dt_summary.columns = ["DT", "Month", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]
+    if not dt_summary.empty:
+        st.dataframe(dt_summary.style.format({
+            "Energy Supplied (kWh)": "{:.2f}",
+            "Energy Billed (kWh)": "{:.2f}",
+            "Energy Unaccounted For (kWh)": "{:.2f}",
+            "Financial Loss (NGN)": "{:.2f}"
+        }))
+    else:
+        st.warning(f"No DT summary data for {selected_feeder_short}.")
+except Exception as e:
+    st.error(f"DT summary failed: {e}")
+    st.write("dt_merged:", dt_merged.head())
+    st.stop()
+
 # DT Theft Probability Heatmap
 st.subheader("DT Theft Probability Heatmap")
 try:
@@ -363,14 +436,14 @@ try:
     customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
     customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
     customer_monthly["theft_probability"] = (
-        0.15 * customer_monthly["feeder_score"] +
-        0.25 * customer_monthly["dt_score"] +
-        0.15 * customer_monthly["meter_status_score"] +
-        0.15 * customer_monthly["account_type_score"] +
-        0.15 * customer_monthly["customer_account_type_score"] +
-        0.15 * customer_monthly["billing_type_score"] +
-        0.10 * customer_monthly["customer_category_score"] +
-        0.15 * customer_monthly["energy_billed_score"]
+        w_feeder * customer_monthly["feeder_score"] +
+        w_dt * customer_monthly["dt_score"] +
+        w_meter * customer_monthly["meter_status_score"] +
+        w_account * customer_monthly["account_type_score"] +
+        w_customer_account * customer_monthly["customer_account_type_score"] +
+        w_billing * customer_monthly["billing_type_score"] +
+        w_category * customer_monthly["customer_category_score"] +
+        w_energy * customer_monthly["energy_billed_score"]
     ).clip(0, 1)
     customer_monthly["risk_tier"] = pd.cut(customer_monthly["theft_probability"], bins=[0, 0.4, 0.7, 1.0], labels=["Low", "Medium", "High"], include_lowest=True)
 except Exception as e:
@@ -412,7 +485,6 @@ try:
     else:
         month_customers = filtered_customers[filtered_customers["month"] == selected_month]
     if not month_customers.empty:
-        # Ensure column order with ACCOUNT_NUMBER first
         display_columns = ["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "theft_probability", "risk_tier"]
         missing_cols = [col for col in display_columns if col not in month_customers.columns]
         if missing_cols:
