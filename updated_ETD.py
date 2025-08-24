@@ -3,6 +3,7 @@ import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
 import seaborn as sns
+import re
 
 # Set Streamlit page config
 st.set_page_config(page_title="IE Energy Theft Detection Dashboard", layout="wide")
@@ -26,9 +27,13 @@ def get_short_name(name, is_dt=False, band_df=None):
             feeder_short = parts[-1].strip()
         # Map to Feeder Band Short Name if available
         if band_df is not None:
-            matching_feeder = band_df[band_df["Feeder"].str.contains(feeder_short, case=False, na=False)]
-            if not matching_feeder.empty:
-                return matching_feeder["Short Name"].iloc[0]
+            # Escape special regex characters
+            try:
+                matching_feeder = band_df[band_df["Feeder"].str.contains(re.escape(feeder_short), case=False, na=False)]
+                if not matching_feeder.empty:
+                    return matching_feeder["Short Name"].iloc[0]
+            except re.PatternError:
+                pass  # Fallback if regex fails
         return feeder_short
     return name if isinstance(name, str) else ""
 
@@ -163,13 +168,16 @@ with col2:
     selected_ut = st.selectbox("Select Undertaking", ut_options)
 with col3:
     customer_df_ut = customer_df_bu[customer_df_bu["UNDERTAKING"] == selected_ut]
-    feeder_options = sorted(feeder_df["Feeder_Short"].unique())
-    feeder_options_display = [f"{f} (Not in Feeder Data)" if f not in feeder_options else f for f in sorted(set(customer_df_ut["Feeder_Short"].unique()) | set(feeder_options))]
+    valid_feeder_short = set(customer_df_ut["Feeder_Short"].unique()) & valid_feeders_short
+    feeder_options_display = sorted(valid_feeder_short)
+    if not feeder_options_display:
+        st.error(f"No valid feeders for BU {selected_bu}, UT {selected_ut}.")
+        st.stop()
     selected_feeder_short = st.selectbox("Select Feeder", feeder_options_display)
 with col4:
-    dt_df_filtered = dt_df[dt_df["Feeder_Short"] == selected_feeder_short.replace(" (Not in Feeder Data)", "")]
+    dt_df_filtered = dt_df[dt_df["Feeder_Short"] == selected_feeder_short]
     dt_options = sorted(dt_df_filtered["DT_Short_Name"].unique())
-    if not dt_options and selected_feeder_short in feeder_options:
+    if not dt_options:
         st.error(f"No DTs available for feeder {selected_feeder_short}. Check New Unique DT Nomenclature in Transformer Data.")
         st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
         st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
@@ -197,6 +205,7 @@ if st.checkbox("Debug: Data"):
     st.write("dt_merged:", dt_merged.head() if 'dt_merged' in locals() else "dt_merged not created yet")
     st.write("Filtered Customer Count:", len(customer_df))
     st.write("Filtered DT Count:", len(dt_df))
+    st.write("Filtered Feeder Count:", len(feeder_df))
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -261,7 +270,7 @@ feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost
 
 # DT Theft Probability Heatmap
 st.subheader("DT Theft Probability Heatmap")
-filtered_dt_agg = dt_agg[dt_agg["Feeder_Short"] == selected_feeder_short.replace(" (Not in Feeder Data)", "")]
+filtered_dt_agg = dt_agg[dt_agg["Feeder_Short"] == selected_feeder_short]
 if filtered_dt_agg.empty:
     st.error(f"No DT data for feeder {selected_feeder_short}.")
     st.write("dt_agg:", dt_agg.head())
