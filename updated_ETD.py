@@ -69,6 +69,7 @@ if st.checkbox("Show debug info"):
     st.write("Transformer JAN-JUN dtypes:", dt_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].dtypes)
     st.write("Sample Transformer JAN-JUN values:", dt_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].head().to_dict())
     st.write("Sample Transformer New Unique DT Nomenclature:", dt_df["New Unique DT Nomenclature"].head().tolist())
+    st.write("Sample Feeder Data Feeder values:", feeder_df["Feeder"].head().tolist())
     st.write("PPD JAN-JUN dtypes:", ppd_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].dtypes)
     st.write("Sample PPD JAN-JUN values:", ppd_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].head().to_dict())
 
@@ -109,16 +110,27 @@ dt_df["Has Energy"] = dt_df[[m + " (kWh)" for m in months]].gt(0).any(axis=1)
 dt_df["Flag"] = (dt_df["Connection Status"] == "Not Connected") & (dt_df["Has Energy"])
 dt_df = dt_df[(dt_df["Connection Status"] == "Connected") | dt_df["Flag"]]
 
-# Map DTs to feeders using prefix matching
-feeder_names = feeder_df["Feeder"].tolist()
+# Map DTs to feeders using New Unique DT Nomenclature
+feeder_names = set(feeder_df["Feeder"].str.strip())
 def map_dt_to_feeder(dt_name):
-    dt_name_str = str(dt_name)
-    for feeder in feeder_names:
-        if dt_name_str.startswith(feeder):
-            return feeder
+    dt_name_str = str(dt_name).strip()
+    if not dt_name_str:
+        return None
+    # Extract feeder name before the first hyphen
+    feeder_part = dt_name_str.split("-")[0].strip()
+    if feeder_part in feeder_names:
+        return feeder_part
     return None
+
 dt_df["Feeder"] = dt_df["New Unique DT Nomenclature"].apply(map_dt_to_feeder)
-dt_df = dt_df.dropna(subset=["Feeder"])
+
+# Debug: Show unmatched feeders
+if st.checkbox("Debug: Feeder-to-DT mapping"):
+    unmatched_dts = dt_df[dt_df["Feeder"].isna()][["New Unique DT Nomenclature", "DT Number"]]
+    if not unmatched_dts.empty:
+        st.write("Unmatched DTs (no feeder found):", unmatched_dts.to_dict())
+    else:
+        st.write("All DTs matched to feeders successfully.")
 
 # Merge with tariffs
 customer_df = customer_df.merge(tariff_df[["Tariff", "Rate (₦)"]], left_on="TARIFF", right_on="Tariff", how="left")
@@ -245,7 +257,7 @@ with col2:
 with col3:
     dt_options = dt_df[dt_df["Feeder"] == selected_feeder]["New Unique DT Nomenclature"].tolist()
     if not dt_options:
-        st.error(f"No DTs available for feeder {selected_feeder_short}. Check Feeder-to-DT mapping.")
+        st.error(f"No DTs available for feeder {selected_feeder_short}. Check Feeder-to-DT mapping in 'Debug: Feeder-to-DT mapping'.")
         st.stop()
     dt_options = [f"{dt} (FLAG: Inactive with Energy)" if dt_df[dt_df["New Unique DT Nomenclature"] == dt]["Flag"].iloc[0] else dt for dt in dt_options]
     selected_dt = st.selectbox("Select DT", dt_options)
@@ -297,7 +309,7 @@ if not pivot_data.empty:
     st.pyplot(plt.gcf())
     plt.close()
 else:
-    st.error("No valid data for heatmap. Check ACCOUNT_NUMBER and NAME_OF_DT consistency.")
+    st.error("No valid data for heatmap. Check ACCOUNT_NUMBER and NAME_OF_DT consistency in 'Debug: Merge inputs for customer_monthly'.")
 
 # Customer List
 st.subheader(f"Customers under {selected_dt_name} ({selected_feeder_short}, {selected_month})")
@@ -321,7 +333,7 @@ if not month_customers.empty:
     }).highlight_max(subset=["theft_probability"], color="lightcoral")
     st.dataframe(styled_df)
 else:
-    st.error("No customers found for the selected DT and month.")
+    st.error("No customers found for the selected DT and month. Check NAME_OF_DT in 'Debug: Merge inputs for customer_monthly'.")
 
 # CSV Export
 st.subheader("Export Customer Data")
