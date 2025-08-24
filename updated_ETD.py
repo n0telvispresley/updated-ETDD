@@ -127,7 +127,7 @@ if st.checkbox("Debug: Data"):
     st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
     st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
     st.write("customer_df Columns:", customer_df.columns.tolist())
-    st.write("dt_agg Columns:", dt_agg.columns.tolist() if 'dt_agg' in locals() else "dt_agg not created yet")
+    st.write("customer_monthly Columns:", customer_monthly.columns.tolist() if 'customer_monthly' in locals() else "customer_monthly not created yet")
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -164,16 +164,21 @@ except Exception as e:
     st.write("customer_df Columns:", customer_df.columns.tolist())
     st.stop()
 
+# Add scores to customer_monthly
+customer_monthly = customer_monthly.merge(
+    customer_df[["ACCOUNT_NUMBER", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "Billing_Type", "CUSTOMER_CATEGORY"]],
+    on="ACCOUNT_NUMBER",
+    how="left"
+)
+customer_monthly["meter_status_score"] = np.where(customer_monthly["METER_STATUS"] == "Not Metered", 0.9, 0.2)
+customer_monthly["account_type_score"] = np.where(customer_monthly["ACCOUNT_TYPE"] == "Postpaid", 0.8, 0.3)
+customer_monthly["customer_account_type_score"] = np.where(customer_monthly["CUSTOMER_ACCOUNT_TYPE"] == "MD", 0.8, 0.3)
+customer_monthly["billing_type_score"] = np.where(customer_monthly["Billing_Type"] == "PPD", 0.5, 0.2)
+customer_monthly["customer_category_score"] = customer_monthly["CUSTOMER_CATEGORY"].map({"Residential": 0.2, "Commercial": 0.5, "Special": 0.8}).fillna(0.2)
+
 # DT consumption
 dt_agg = dt_df.melt(id_vars=["NAME_OF_DT", "DT_Short_Name", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
 dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
-
-# Calculate scores
-customer_df["meter_status_score"] = np.where(customer_df["METER_STATUS"] == "Not Metered", 0.9, 0.2)
-customer_df["account_type_score"] = np.where(customer_df["ACCOUNT_TYPE"] == "Postpaid", 0.8, 0.3)
-customer_df["customer_account_type_score"] = np.where(customer_df["CUSTOMER_ACCOUNT_TYPE"] == "MD", 0.8, 0.3)
-customer_df["billing_type_score"] = np.where(customer_df["Billing_Type"] == "PPD", 0.5, 0.2)
-customer_df["customer_category_score"] = customer_df["CUSTOMER_CATEGORY"].map({"Residential": 0.2, "Commercial": 0.5, "Special": 0.8}).fillna(0.2)
 
 # Billed energy
 customer_agg = customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].sum().reset_index()
@@ -211,7 +216,7 @@ with col2:
         st.error(f"No DTs available for feeder {selected_feeder_short}. Check New Unique DT Nomenclature in Transformer Data.")
         st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
         st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
-        st.write("filtered_dt_agg:", filtered_dt_agg)
+        st.write("filtered_dt_agg:", filtered_dt_agg if 'filtered_dt_agg' in locals() else "filtered_dt_agg not created yet")
         st.stop()
     selected_dt_short = st.selectbox("Select DT", dt_options)
 with col3:
@@ -240,11 +245,11 @@ else:
     st.stop()
 
 # Customer scores
+customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
 customer_monthly = customer_monthly.merge(feeder_merged[["Feeder_Short", "month", "feeder_score"]], on=["Feeder_Short", "month"], how="left")
 customer_monthly = customer_monthly.merge(dt_merged[["NAME_OF_DT", "month", "dt_score"]], on=["NAME_OF_DT", "month"], how="left")
 customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
 customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
-customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
 customer_monthly["theft_probability"] = (
     0.15 * customer_monthly["feeder_score"] +
     0.25 * customer_monthly["dt_score"] +
