@@ -36,7 +36,7 @@ try:
         sheet_name=None,
         converters={
             "Feeder Data": {"Feeder": preserve_exact_string},
-            "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string},
+            "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "Ownership": preserve_exact_string},
             "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
             "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
             "Feeder Band": {"BAND": preserve_exact_string, "Feeder": preserve_exact_string, "Short Name": preserve_exact_string},
@@ -62,7 +62,7 @@ if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_d
 
 # Validate column names
 required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING", "TARIFF"]
-required_dt_cols = ["New Unique DT Nomenclature"]
+required_dt_cols = ["New Unique DT Nomenclature", "Ownership"]
 required_feeder_cols = ["Feeder"]
 required_band_cols = ["Feeder", "BAND"]
 required_tariff_cols = ["Tariff"]
@@ -76,8 +76,12 @@ for df, name, cols in [
 ]:
     missing_cols = [col for col in cols if col not in df.columns]
     if missing_cols:
-        st.error(f"Missing columns in {name}: {missing_cols}")
-        st.stop()
+        if name == "Transformer Data" and "Ownership" in missing_cols:
+            st.warning("Ownership column missing in Transformer Data. Assuming all DTs are public.")
+            dt_df["Ownership"] = "Public"
+        else:
+            st.error(f"Missing columns in {name}: {missing_cols}")
+            st.stop()
 
 # Validate month columns
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -287,6 +291,7 @@ if st.checkbox("Debug: Data"):
     st.write("Valid DTs (Transformer Data):", sorted(dt_df["New Unique DT Nomenclature"].unique()))
     st.write("dt_df Feeder:", sorted(dt_df["Feeder"].unique()))
     st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
+    st.write("dt_df Ownership:", dt_df["Ownership"].unique().tolist())
     st.write("customer_df Columns:", customer_df.columns.tolist())
     st.write("customer_monthly Columns:", customer_monthly.columns.tolist() if 'customer_monthly' in locals() else "customer_monthly not created yet")
     st.write("dt_agg Columns:", dt_agg.columns.tolist() if 'dt_agg' in locals() else "dt_agg not created yet")
@@ -348,9 +353,9 @@ except Exception as e:
     st.write("customer_df Columns:", customer_df.columns.tolist())
     st.stop()
 
-# DT consumption
+# DT consumption (per month for heatmap)
 try:
-    dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
+    dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
     dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
 except Exception as e:
     st.error(f"DT melt failed: {e}")
@@ -363,65 +368,90 @@ if not selected_months:
     st.error("No months selected.")
     st.stop()
 customer_monthly = customer_monthly[customer_monthly["month"].isin(selected_months)]
-dt_agg = dt_agg[dt_agg["month"].isin(selected_months)]
-if customer_monthly.empty or dt_agg.empty:
+dt_agg_monthly = dt_agg[dt_agg["month"].isin(selected_months)]  # For heatmap
+if customer_monthly.empty or dt_agg_monthly.empty:
     st.error(f"No data for selected months {selected_months}.")
     st.write("customer_monthly size:", len(customer_monthly))
-    st.write("dt_agg size:", len(dt_agg))
+    st.write("dt_agg_monthly size:", len(dt_agg_monthly))
     st.stop()
 
-# Aggregate over month range
+# Aggregate customer data over month range
 period_label = f"{start_month}" if start_month == end_month else f"{start_month} to {end_month}"
 try:
     customer_agg = customer_monthly.groupby(["NAME_OF_DT", "Feeder"])["billed_kwh"].sum().reset_index()
-    customer_agg.rename(columns={"billed_kwh": "total_billed_kwh"}, inplace=True)
+    customer_agg.rename(columns={"billed_kwh": "customer_billed_kwh"}, inplace=True)
 except Exception as e:
     st.error(f"Customer aggregation failed: {e}")
     st.write("customer_monthly:", customer_monthly.head())
     st.stop()
 
+# Aggregate DT data over month range
 try:
-    dt_agg = dt_agg.groupby(["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate"])["total_dt_kwh"].sum().reset_index()
+    dt_agg_sum = dt_agg_monthly.groupby(["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership"])["total_dt_kwh"].sum().reset_index()
 except Exception as e:
     st.error(f"DT aggregation failed: {e}")
-    st.write("dt_agg:", dt_agg.head())
+    st.write("dt_agg_monthly:", dt_agg_monthly.head())
     st.stop()
 
+# DT scores and billed energy
 try:
-    feeder_monthly = feeder_df.melt(id_vars=["Feeder", "Feeder_Short", "Tariff_Rate"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
-    feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
-    feeder_monthly = feeder_monthly[feeder_monthly["month"].isin(selected_months)]
-    feeder_monthly = feeder_monthly.groupby(["Feeder", "Feeder_Short", "Tariff_Rate"])["feeder_energy_kwh"].sum().reset_index()
-except Exception as e:
-    st.error(f"Feeder melt failed: {e}")
-    st.write("feeder_df Columns:", feeder_df.columns.tolist())
-    st.stop()
-
-# DT scores
-try:
-    dt_merged = dt_agg.merge(customer_agg, left_on=["New Unique DT Nomenclature", "Feeder"], right_on=["NAME_OF_DT", "Feeder"], how="left")
-    dt_merged["total_billed_kwh"] = dt_merged["total_billed_kwh"].fillna(0)
+    dt_merged = dt_agg_sum.merge(customer_agg, left_on=["New Unique DT Nomenclature", "Feeder"], right_on=["NAME_OF_DT", "Feeder"], how="left")
+    dt_merged["customer_billed_kwh"] = dt_merged["customer_billed_kwh"].fillna(0)
+    # Apply ownership logic for total_billed_kwh
+    dt_merged["total_billed_kwh"] = np.where(
+        dt_merged["Ownership"] == "Private",
+        dt_merged["total_dt_kwh"],
+        dt_merged["customer_billed_kwh"]
+    )
     dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0, 1)).clip(0, 1)
     dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_billed_kwh"]
     dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * dt_merged["Tariff_Rate"]
 except Exception as e:
     st.error(f"DT merge failed: {e}")
-    st.write("dt_agg:", dt_agg.head())
+    st.write("dt_agg_sum:", dt_agg_sum.head())
     st.write("customer_agg:", customer_agg.head())
+    st.stop()
+
+# Compute per-month DT scores for heatmap
+try:
+    dt_merged_monthly = dt_agg_monthly.merge(customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "customer_billed_kwh"}), 
+                                            left_on=["New Unique DT Nomenclature", "month"], right_on=["NAME_OF_DT", "month"], how="left")
+    dt_merged_monthly["customer_billed_kwh"] = dt_merged_monthly["customer_billed_kwh"].fillna(0)
+    dt_merged_monthly["total_billed_kwh"] = np.where(
+        dt_merged_monthly["Ownership"] == "Private",
+        dt_merged_monthly["total_dt_kwh"],
+        dt_merged_monthly["customer_billed_kwh"]
+    )
+    dt_merged_monthly["dt_score"] = (1 - dt_merged_monthly["total_billed_kwh"] / dt_merged_monthly["total_dt_kwh"].replace(0, 1)).clip(0, 1)
+except Exception as e:
+    st.error(f"DT monthly merge failed: {e}")
+    st.write("dt_agg_monthly:", dt_agg_monthly.head())
+    st.write("customer_monthly:", customer_monthly.head())
+    st.stop()
+
+# Feeder consumption
+try:
+    feeder_monthly = feeder_df.melt(id_vars=["Feeder", "Feeder_Short", "Tariff_Rate"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
+    feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
+    feeder_monthly = feeder_monthly[feeder_monthly["month"].isin(selected_months)]
+    feeder_agg = feeder_monthly.groupby(["Feeder", "Feeder_Short", "Tariff_Rate"])["feeder_energy_kwh"].sum().reset_index()
+except Exception as e:
+    st.error(f"Feeder melt failed: {e}")
+    st.write("feeder_df Columns:", feeder_df.columns.tolist())
     st.stop()
 
 # Feeder scores
 try:
-    feeder_agg = customer_monthly.groupby(["Feeder"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
-    feeder_merged = feeder_monthly.merge(feeder_agg, on=["Feeder"], how="left")
+    feeder_agg_billed = dt_merged.groupby(["Feeder"])["total_billed_kwh"].sum().reset_index()
+    feeder_merged = feeder_agg.merge(feeder_agg_billed, on=["Feeder"], how="left")
     feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
     feeder_merged["feeder_score"] = (1 - feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0, 1)).clip(0, 1)
     feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["feeder_energy_kwh"] - feeder_merged["total_billed_kwh"]
     feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * feeder_merged["Tariff_Rate"]
 except Exception as e:
     st.error(f"Feeder merge failed: {e}")
-    st.write("feeder_monthly:", feeder_monthly.head())
     st.write("feeder_agg:", feeder_agg.head())
+    st.write("feeder_agg_billed:", feeder_agg_billed.head())
     st.stop()
 
 # Feeder Summary Table
@@ -435,8 +465,8 @@ try:
         st.stop()
     if feeder_merged.empty:
         st.error("feeder_merged is empty.")
-        st.write("feeder_monthly:", feeder_monthly.head())
         st.write("feeder_agg:", feeder_agg.head())
+        st.write("feeder_agg_billed:", feeder_agg_billed.head())
         st.stop()
     feeder_summary = feeder_merged[required_cols].copy()
     feeder_summary["Period"] = period_label
@@ -486,14 +516,11 @@ except Exception as e:
 # DT Theft Probability Heatmap
 st.subheader("DT Theft Probability Heatmap")
 try:
-    filtered_dt_agg = dt_agg[dt_agg["Feeder"] == selected_feeder]
+    filtered_dt_agg = dt_merged_monthly[dt_merged_monthly["Feeder"] == selected_feeder]
     if filtered_dt_agg.empty:
         st.error(f"No DT data for feeder {selected_feeder_short}.")
-        st.write("dt_agg:", dt_agg.head())
-        st.write("dt_merged:", dt_merged.head())
+        st.write("dt_merged_monthly:", dt_merged_monthly.head())
         st.stop()
-    filtered_dt_agg = filtered_dt_agg.merge(dt_merged[["New Unique DT Nomenclature", "dt_score"]], on=["New Unique DT Nomenclature"], how="left")
-    filtered_dt_agg["dt_score"] = filtered_dt_agg["dt_score"].fillna(0)
     dt_pivot = filtered_dt_agg.pivot_table(index="DT_Short_Name", columns="month", values="dt_score", aggfunc="mean")
     if not dt_pivot.empty:
         plt.figure(figsize=(10, 8))
@@ -514,7 +541,7 @@ except Exception as e:
 try:
     customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
     customer_monthly = customer_monthly.merge(feeder_merged[["Feeder", "feeder_score"]], on=["Feeder"], how="left")
-    customer_monthly = customer_monthly.merge(dt_merged[["New Unique DT Nomenclature", "dt_score"]], left_on=["NAME_OF_DT"], right_on=["New Unique DT Nomenclature"], how="left")
+    customer_monthly = customer_monthly.merge(dt_merged_monthly[["New Unique DT Nomenclature", "month", "dt_score"]], left_on=["NAME_OF_DT", "month"], right_on=["New Unique DT Nomenclature", "month"], how="left")
     customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
     customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
     customer_monthly["theft_probability"] = (
