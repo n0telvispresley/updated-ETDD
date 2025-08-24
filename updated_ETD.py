@@ -127,7 +127,6 @@ if st.checkbox("Debug: Data"):
     st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
     st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
     st.write("customer_df Columns:", customer_df.columns.tolist())
-    st.write("customer_monthly Columns:", customer_monthly.columns.tolist() if 'customer_monthly' in locals() else "customer_monthly not created yet")
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -145,39 +144,25 @@ for month in months:
 for df in [feeder_df, dt_df, ppm_df, ppd_df]:
     df.drop(columns=months, errors="ignore", inplace=True)
 
-# Ensure required columns for melt
-required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "Feeder_Short", "Rate (NGN)"]
-value_vars = [f"{m} (kWh)" for m in months]
-for col in required_id_vars:
-    if col not in customer_df.columns:
-        customer_df[col] = ""
-for col in value_vars:
-    if col not in customer_df.columns:
-        customer_df[col] = 0
+# Filter customer_df for valid feeders
+customer_df = pd.concat([ppm_df, ppd_df], ignore_index=True)
+customer_df = customer_df[customer_df["NAME_OF_FEEDER"].isin(valid_feeders)]
+customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True))
+customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(get_short_name)
 
 # Melt customer data
-try:
-    customer_monthly = customer_df.melt(id_vars=required_id_vars, value_vars=value_vars, var_name="month", value_name="billed_kwh")
-    customer_monthly["month"] = customer_monthly["month"].str.replace(" (kWh)", "")
-except Exception as e:
-    st.error(f"Melt failed: {e}")
-    st.write("customer_df Columns:", customer_df.columns.tolist())
+required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "Feeder_Short", "BUSINESS_UNIT", "Rate (NGN)"]
+value_vars = [f"{m} (kWh)" for m in months]
+missing_id_vars = [col for col in required_id_vars if col not in customer_df.columns]
+missing_value_vars = [col for col in value_vars if col not in customer_df.columns]
+if missing_id_vars or missing_value_vars:
+    st.error(f"Missing columns: id_vars {missing_id_vars}, value_vars {missing_value_vars}")
     st.stop()
-
-# Add scores to customer_monthly
-customer_monthly = customer_monthly.merge(
-    customer_df[["ACCOUNT_NUMBER", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "Billing_Type", "CUSTOMER_CATEGORY"]],
-    on="ACCOUNT_NUMBER",
-    how="left"
-)
-customer_monthly["meter_status_score"] = np.where(customer_monthly["METER_STATUS"] == "Not Metered", 0.9, 0.2)
-customer_monthly["account_type_score"] = np.where(customer_monthly["ACCOUNT_TYPE"] == "Postpaid", 0.8, 0.3)
-customer_monthly["customer_account_type_score"] = np.where(customer_monthly["CUSTOMER_ACCOUNT_TYPE"] == "MD", 0.8, 0.3)
-customer_monthly["billing_type_score"] = np.where(customer_monthly["Billing_Type"] == "PPD", 0.5, 0.2)
-customer_monthly["customer_category_score"] = customer_monthly["CUSTOMER_CATEGORY"].map({"Residential": 0.2, "Commercial": 0.5, "Special": 0.8}).fillna(0.2)
+customer_monthly = customer_df.melt(id_vars=required_id_vars, value_vars=value_vars, var_name="month", value_name="billed_kwh")
+customer_monthly["month"] = customer_monthly["month"].str.replace(" (kWh)", "")
 
 # DT consumption
-dt_agg = dt_df.melt(id_vars=["NAME_OF_DT", "DT_Short_Name", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
+dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
 dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
 
 # Billed energy
@@ -185,7 +170,8 @@ customer_agg = customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].s
 customer_agg.rename(columns={"billed_kwh": "total_billed_kwh"}, inplace=True)
 
 # DT scores
-dt_merged = dt_agg.merge(customer_agg, on=["NAME_OF_DT", "month"], how="left")
+dt_merged = dt_agg.merge(customer_agg, left_on=["New Unique DT Nomenclature", "month"], right_on=["NAME_OF_DT", "month"], how="left")
+dt_merged["NAME_OF_DT"] = dt_merged["New Unique DT Nomenclature"]
 dt_merged["total_billed_kwh"] = dt_merged["total_billed_kwh"].fillna(0)
 dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0, 1)).clip(0, 1)
 dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_billed_kwh"]
@@ -216,7 +202,7 @@ with col2:
         st.error(f"No DTs available for feeder {selected_feeder_short}. Check New Unique DT Nomenclature in Transformer Data.")
         st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
         st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
-        st.write("filtered_dt_agg:", filtered_dt_agg if 'filtered_dt_agg' in locals() else "filtered_dt_agg not created yet")
+        st.write("filtered_dt_agg:", filtered_dt_agg if 'filtered_dt_agg' in locals() else "not created")
         st.stop()
     selected_dt_short = st.selectbox("Select DT", dt_options)
 with col3:
@@ -228,10 +214,7 @@ st.subheader("DT Theft Probability Heatmap")
 filtered_dt_agg = dt_agg[dt_agg["Feeder_Short"] == selected_feeder_short.replace(" (Not in Feeder Data)", "")]
 if filtered_dt_agg.empty:
     st.error(f"No DT data for feeder {selected_feeder_short}.")
-    st.write("dt_agg Columns:", dt_agg.columns.tolist())
     st.stop()
-filtered_dt_agg = filtered_dt_agg.merge(dt_merged[["NAME_OF_DT", "month", "dt_score"]], on=["NAME_OF_DT", "month"], how="left")
-filtered_dt_agg["dt_score"] = filtered_dt_agg["dt_score"].fillna(0)
 dt_pivot = filtered_dt_agg.pivot_table(index="DT_Short_Name", columns="month", values="dt_score", aggfunc="mean")
 if not dt_pivot.empty:
     plt.figure(figsize=(10, 8))
@@ -241,7 +224,6 @@ if not dt_pivot.empty:
     plt.close()
 else:
     st.error(f"No DT data for {selected_feeder_short} after pivoting.")
-    st.write("filtered_dt_agg:", filtered_dt_agg)
     st.stop()
 
 # Customer scores
