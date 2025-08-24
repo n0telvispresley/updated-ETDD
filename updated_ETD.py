@@ -116,8 +116,8 @@ def map_dt_to_feeder(dt_name):
     dt_name_str = str(dt_name).strip()
     if not dt_name_str:
         return None
-    # Extract feeder name before the first hyphen
-    feeder_part = dt_name_str.split("-")[0].strip()
+    # Extract feeder name before the last hyphen
+    feeder_part = "-".join(dt_name_str.rsplit("-", 1)[:-1]).strip()
     if feeder_part in feeder_names:
         return feeder_part
     return None
