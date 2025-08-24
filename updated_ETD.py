@@ -134,9 +134,13 @@ ppd_df["FEEDER_NO"] = ppd_df["FEEDER_NO"].astype(str).str.strip().str.upper()
 feeder_df["Feeder No"] = feeder_df["Feeder No"].astype(str).str.strip().str.upper()
 
 # Handle missing UNDERTAKING
-ppm_df["UNDERTAKING"] = ppm_df["UNDERTAKING"].astype(str).replace(["", "nan", "N/A"], "PTC")
-ppd_df["UNDERTAKING"] = ppd_df["UNDERTAKING"].astype(str).replace(["", "nan", "N/A"], "PTC")
-dt_df["UNDERTAKING"] = dt_df.get("UNDERTAKING", "").astype(str).replace(["", "nan", "N/A"], "PTC")
+if "UNDERTAKING" not in dt_df.columns:
+    st.warning("Column 'UNDERTAKING' not found in Transformer Data. Creating with 'PTC'.")
+    dt_df["UNDERTAKING"] = "PTC"
+else:
+    dt_df["UNDERTAKING"] = dt_df["UNDERTAKING"].astype(str).fillna("PTC").replace(["", "N/A"], "PTC")
+ppm_df["UNDERTAKING"] = ppm_df["UNDERTAKING"].astype(str).fillna("PTC").replace(["", "N/A"], "PTC")
+ppd_df["UNDERTAKING"] = ppd_df["UNDERTAKING"].astype(str).fillna("PTC").replace(["", "N/A"], "PTC")
 
 # Combine PPM and PPD into customer_df
 ppm_df["Billing_Type"] = "PPM"
@@ -157,14 +161,15 @@ customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(get_dt_short_name
 
 # Map customers to DTs using DT_NO
 customer_df = customer_df.merge(
-    dt_df[["DT Number", "New Unique DT Nomenclature", "Feeder"]],
+    dt_df[["DT Number", "New Unique DT Nomenclature", "Feeder", "UNDERTAKING"]],
     left_on="DT_NO",
     right_on="DT Number",
     how="left"
 )
 customer_df["NAME_OF_DT"] = customer_df["New Unique DT Nomenclature"].combine_first(customer_df["NAME_OF_DT"])
 customer_df["NAME_OF_FEEDER"] = customer_df["Feeder"].combine_first(customer_df["NAME_OF_FEEDER"])
-customer_df = customer_df.drop(columns=["DT Number", "New Unique DT Nomenclature", "Feeder"], errors="ignore")
+customer_df["UNDERTAKING"] = customer_df["UNDERTAKING_y"].combine_first(customer_df["UNDERTAKING_x"]).fillna("PTC")
+customer_df = customer_df.drop(columns=["DT Number", "New Unique DT Nomenclature", "Feeder", "UNDERTAKING_x", "UNDERTAKING_y"], errors="ignore")
 
 # Merge with tariffs
 tariff_merge = customer_df.merge(tariff_df[["Tariff", "Rate (NGN)"]], left_on="TARIFF", right_on="Tariff", how="left")
@@ -179,9 +184,11 @@ if st.checkbox("Debug: Tariff and Mapping"):
     st.write("Sample DT_NO values:", customer_df["DT_NO"].head().tolist())
     st.write("Sample NAME_OF_DT values:", customer_df["NAME_OF_DT"].head().tolist())
     st.write("Sample NAME_OF_FEEDER values:", customer_df["NAME_OF_FEEDER"].head().tolist())
+    st.write("Sample UNDERTAKING values:", customer_df["UNDERTAKING"].head().tolist())
     st.write("dt_df DT Number unique values:", sorted(dt_df["DT Number"].dropna().astype(str).unique()))
     st.write("dt_df New Unique DT Nomenclature unique values:", sorted(dt_df["New Unique DT Nomenclature"].dropna().astype(str).unique()))
     st.write("dt_df Feeder unique values:", sorted(dt_df["Feeder"].dropna().astype(str).unique()))
+    st.write("dt_df UNDERTAKING unique values:", sorted(dt_df["UNDERTAKING"].dropna().astype(str).unique()))
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -232,6 +239,7 @@ if st.checkbox("Debug: Customer Data before melt"):
     st.write("Sample DT_NO values:", customer_df["DT_NO"].head().tolist())
     st.write("Sample NAME_OF_DT values:", customer_df["NAME_OF_DT"].head().tolist())
     st.write("Sample NAME_OF_FEEDER values:", customer_df["NAME_OF_FEEDER"].head().tolist())
+    st.write("Sample UNDERTAKING values:", customer_df["UNDERTAKING"].head().tolist())
     st.write("Sample Rate (NGN) values:", customer_df["Rate (NGN)"].head().tolist() if "Rate (NGN)" in customer_df.columns else "Rate (NGN) missing")
     st.write("Month columns present:", [col for col in customer_df.columns if col.endswith(" (kWh)")])
 
@@ -273,7 +281,7 @@ dt_df = dt_df[(dt_df["Connection Status"] == "Connected") | dt_df["Flag"]]
 
 # Handle privately owned DTs
 dt_no_customers = dt_df[~dt_df["DT Number"].isin(customer_df["DT_NO"])]
-private_dts = dt_no_customers[["New Unique DT Nomenclature", "DT Number", "Feeder", "DT_Short_Name"]].copy()
+private_dts = dt_no_customers[["New Unique DT Nomenclature", "DT Number", "Feeder", "DT_Short_Name", "UNDERTAKING"]].copy()
 private_dts["ACCOUNT_NUMBER"] = private_dts["DT Number"]
 private_dts["METER_NUMBER"] = private_dts["DT Number"]
 private_dts["CUSTOMER_NAME"] = private_dts["New Unique DT Nomenclature"] + " (Private DT)"
@@ -286,7 +294,7 @@ private_dts["CUSTOMER_CATEGORY"] = "Special"
 private_dts["Rate (NGN)"] = 209.5
 private_dts["NAME_OF_FEEDER"] = private_dts["Feeder"]
 private_dts["BUSINESS_UNIT"] = "PTC"
-private_dts["UNDERTAKING"] = "PTC"
+private_dts["UNDERTAKING"] = private_dts["UNDERTAKING"].fillna("PTC")
 private_dts["DT_NO"] = private_dts["DT Number"]
 for month in months:
     private_dts[month + " (kWh)"] = dt_no_customers[month + " (kWh)"]
@@ -406,6 +414,7 @@ if st.checkbox("Debug: Filtered data"):
     st.write("Sample DT_NO values:", filtered_customer_df["DT_NO"].head().tolist())
     st.write("Sample NAME_OF_DT values:", filtered_customer_df["NAME_OF_DT"].head().tolist())
     st.write("Sample NAME_OF_FEEDER values:", filtered_customer_df["NAME_OF_FEEDER"].head().tolist())
+    st.write("Sample UNDERTAKING values:", filtered_customer_df["UNDERTAKING"].head().tolist())
     st.write("Unique NAME_OF_FEEDER values:", sorted(filtered_customer_df["NAME_OF_FEEDER"].dropna().astype(str).unique()))
     st.write("Unique DT_Short_Name values:", sorted(filtered_customer_df["DT_Short_Name"].dropna().astype(str).unique()))
     st.write("filtered_dt_df rows:", len(filtered_dt_df))
