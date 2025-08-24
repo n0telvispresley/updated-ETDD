@@ -408,7 +408,7 @@ try:
         "feeder_financial_loss_naira": "sum"
     }).reset_index()
     feeder_summary.columns = ["Feeder", "Month", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]
-    feeder_summary = feeder_summary[["Feeder", "Month", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]
+    feeder_summary = feeder_summary["Feeder", "Month", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]
     if not feeder_summary.empty:
         st.dataframe(feeder_summary.style.format({
             "Energy Supplied (kWh)": "{:.2f}",
@@ -558,3 +558,4 @@ if not month_customers.empty:
 
 # Footer
 st.markdown("Built by Elvis for Ikeja Electric SIWES III. August 2025.")
+
