@@ -94,12 +94,12 @@ ppm_df = ppm_df.drop(columns=months)
 ppd_df = ppd_df.drop(columns=months)
 customer_df = pd.concat([ppm_df, ppd_df], ignore_index=True)
 
-# Verify unbilled energy accuracy in Transformer Data
+# Verify unbilled energy accuracy
 dt_df["Calculated Avg Monthly Unbilled Energy (kWh)"] = sum(dt_df[m + " (kWh)"] for m in months) / 6
 dt_df["Provided Avg Monthly Unbilled Energy (kWh)"] = pd.to_numeric(dt_df["Avg Monthly Unbilled Energy"], errors="coerce") / 1000
 dt_df["Provided Avg Monthly Unbilled Energy (kWh)"] = dt_df["Provided Avg Monthly Unbilled Energy (kWh)"].fillna(0)
 dt_df["Unbilled Energy Discrepancy (kWh)"] = np.abs(dt_df["Calculated Avg Monthly Unbilled Energy (kWh)"] - dt_df["Provided Avg Monthly Unbilled Energy (kWh)"])
-dt_df["Unbilled Energy Accuracy"] = dt_df["Unbilled Energy Discrepancy (kWh)"] < 1  # Threshold for accuracy
+dt_df["Unbilled Energy Accuracy"] = dt_df["Unbilled Energy Discrepancy (kWh)"] < 1
 
 # Filter inactive DTs
 dt_df["Has Energy"] = dt_df[[m + " (kWh)" for m in months]].gt(0).any(axis=1)
@@ -119,7 +119,7 @@ dt_df = dt_df.dropna(subset=["Feeder"])
 
 # Merge with tariffs
 customer_df = customer_df.merge(tariff_df[["Tariff", "Rate (₦)"]], left_on="TARIFF", right_on="Tariff", how="left")
-customer_df["Rate (₦)"] = customer_df["Rate (₦)"].fillna(209.5)  # Fallback rate
+customer_df["Rate (₦)"] = customer_df["Rate (₦)"].fillna(209.5)
 
 # Calculate scores
 customer_df["meter_status_score"] = np.where(customer_df["METER_STATUS"] == "Not Metered", 0.9, 0.2)
@@ -129,7 +129,7 @@ customer_df["billing_type_score"] = np.where(customer_df["Billing_Type"] == "PPD
 customer_df["customer_category_score"] = customer_df["CUSTOMER_CATEGORY"].map({"Residential": 0.2, "Commercial": 0.5, "Special": 0.8}).fillna(0.2)
 
 # Calculate total DT consumption per feeder per month
-dt_agg = dt_df.melt(id_vars=["Feeder", "New Unique DT Nomenclature"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
+dt_agg = dt_df.melt(id_vars=["Feeder", "New Unique DT Nomenclature", "DT Number", "Flag"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
 dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
 
 # Calculate feeder scores
@@ -139,13 +139,11 @@ feeder_merged = feeder_monthly.merge(dt_agg.groupby(["Feeder", "month"])["total_
 feeder_merged["total_dt_kwh"] = feeder_merged["total_dt_kwh"].fillna(0)
 feeder_merged["feeder_score"] = (1 - feeder_merged["total_dt_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0, 1)).clip(0, 1)
 feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["feeder_energy_kwh"] - feeder_merged["total_dt_kwh"]
-
-# Merge with band_df for loss estimation
 feeder_merged = feeder_merged.merge(band_df[["Feeder", "BAND"]], on="Feeder", how="left")
-feeder_merged["feeder_financial_loss_naira"] = feeder_merged.groupby("BAND")["feeder_energy_lost_kwh"].transform("mean") * feeder_merged["feeder_energy_lost_kwh"]
+feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * 209.5  # Default rate
 
 # Calculate total billed energy per DT per month
-customer_monthly = customer_df.melt(id_vars=["NAME_OF_DT", "ACCOUNT_NUMBER", "Rate (₦)"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="billed_kwh")
+customer_monthly = customer_df.melt(id_vars=["NAME_OF_DT", "ACCOUNT_NUMBER", "Rate (₦)", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "NAME_OF_FEEDER"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="billed_kwh")
 customer_monthly["month"] = customer_monthly["month"].str.replace(" (kWh)", "")
 customer_agg = customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].sum().reset_index()
 customer_agg.rename(columns={"billed_kwh": "total_billed_kwh"}, inplace=True)
@@ -155,27 +153,37 @@ dt_merged = dt_agg.merge(customer_agg, left_on=["New Unique DT Nomenclature", "m
 dt_merged["total_billed_kwh"] = dt_merged["total_billed_kwh"].fillna(0)
 dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0, 1)).clip(0, 1)
 dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_billed_kwh"]
-dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5  # Default rate for DT-level
+dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
+
+# Debug: Check dt_no_customers columns
+dt_no_customers = dt_merged[~dt_merged["New Unique DT Nomenclature"].isin(customer_df["NAME_OF_DT"])]
+if st.checkbox("Debug: Show dt_no_customers columns"):
+    st.write("dt_no_customers columns:", dt_no_customers.columns.tolist())
+    st.write("dt_no_customers sample:", dt_no_customers.head().to_dict())
 
 # Handle MD-owned DTs
-dt_no_customers = dt_merged[~dt_merged["New Unique DT Nomenclature"].isin(customer_df["NAME_OF_DT"])]
-md_customers = dt_no_customers[["New Unique DT Nomenclature", "DT Number", "Feeder", "month", "dt_score"]].copy()
+md_customers = dt_no_customers[["New Unique DT Nomenclature", "DT Number", "Feeder", "month", "dt_score", "Flag"]].copy()
 md_customers["ACCOUNT_NUMBER"] = md_customers["DT Number"]
 md_customers["METER_NUMBER"] = md_customers["DT Number"]
 md_customers["CUSTOMER_NAME"] = md_customers["New Unique DT Nomenclature"]
 md_customers["ADDRESS"] = "MD-Owned DT"
-md_customers["ENERGY_BILLED (kWh)"] = 0
+md_customers["billed_kwh"] = 0
 md_customers["METER_STATUS"] = "Not Metered"
 md_customers["ACCOUNT_TYPE"] = "Postpaid"
 md_customers["CUSTOMER_ACCOUNT_TYPE"] = "MD"
 md_customers["Billing_Type"] = "PPD"
 md_customers["CUSTOMER_CATEGORY"] = "Special"
 md_customers["Rate (₦)"] = 209.5
-md_customers["theft_probability"] = md_customers["dt_score"]
 md_customers["NAME_OF_FEEDER"] = md_customers["Feeder"]
+md_customers["theft_probability"] = md_customers["dt_score"]
+md_customers["meter_status_score"] = 0.9
+md_customers["account_type_score"] = 0.8
+md_customers["customer_account_type_score"] = 0.8
+md_customers["billing_type_score"] = 0.5
+md_customers["customer_category_score"] = 0.8
+md_customers["energy_billed_score"] = 0.0
 
 # Append MD-owned DTs
-customer_monthly = customer_monthly.merge(customer_df[["ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "Rate (₦)", "Billing_Type"]], on="ACCOUNT_NUMBER", how="left")
 customer_monthly = pd.concat([customer_monthly, md_customers], ignore_index=True)
 
 # Calculate customer scores
@@ -185,14 +193,14 @@ customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
 customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
 customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
 customer_monthly["theft_probability"] = (
-    0.2 * customer_monthly["feeder_score"] +
-    0.3 * customer_monthly["dt_score"] +
-    0.2 * customer_monthly["meter_status_score"] +
+    0.15 * customer_monthly["feeder_score"] +
+    0.25 * customer_monthly["dt_score"] +
+    0.15 * customer_monthly["meter_status_score"] +
     0.15 * customer_monthly["account_type_score"] +
     0.15 * customer_monthly["customer_account_type_score"] +
-    0.2 * customer_monthly["energy_billed_score"] +
-    0.1 * customer_monthly["billing_type_score"] +
-    0.1 * customer_monthly["customer_category_score"]
+    0.15 * customer_monthly["billing_type_score"] +
+    0.10 * customer_monthly["customer_category_score"] +
+    0.15 * customer_monthly["energy_billed_score"]
 ).clip(0, 1)
 
 # Add risk tiers
@@ -209,12 +217,15 @@ st.markdown("Detect high-risk buildings and MD-owned DTs using multi-month data 
 
 # Filters
 st.subheader("Filters")
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
-    band_options = band_df["BAND"].unique()
-    selected_band = st.selectbox("Select Band", ["All"] + list(band_df["BAND"].unique()))
+    band_options = ["All"] + sorted(band_df["BAND"].unique())
+    selected_band = st.selectbox("Select Band", band_options)
 with col2:
-    feeder_options = band_df[band_df["BAND"] == selected_band]["Short Name"].tolist() if selected_band != "All" else band_df["Short Name"].tolist()
+    if selected_band == "All":
+        feeder_options = band_df.sort_values("BAND")["Short Name"].tolist()
+    else:
+        feeder_options = band_df[band_df["BAND"] == selected_band].sort_values("BAND")["Short Name"].tolist()
     selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
     selected_feeder = band_df[band_df["Short Name"] == selected_feeder_short]["Feeder"].iloc[0] if selected_feeder_short else None
 with col3:
@@ -223,12 +234,16 @@ with col3:
     selected_dt = st.selectbox("Select DT", dt_options)
     selected_dt_name = selected_dt.replace(" (FLAG: Inactive with Energy)", "")
 with col4:
-    selected_month = st.selectbox("Select Month", months)
+    business_unit_options = ["All"] + sorted(customer_df["BUSINESS_UNIT"].unique())
+    selected_business_unit = st.selectbox("Select Business Unit", business_unit_options)
+with col5:
+    undertaking_options = ["All"] + sorted(customer_df["UNDERTAKING"].unique())
+    selected_undertaking = st.selectbox("Select Undertaking", undertaking_options)
 
 # Feeder-Level Summary
 st.subheader("Feeder-Level Loss Summary")
-feeder_summary = feeder_merged[feeder_merged["month"] == selected_month][["Feeder", "feeder_energy_lost_kwh", "feeder_financial_loss_naira"]].merge(band_df[["Feeder", "Short Name", "BAND"]], on="Feeder")
-feeder_summary = feeder_summary.sort_values(by="BAND")
+feeder_summary = feeder_merged[feeder_merged["month"] == "JUN"].merge(band_df[["Feeder", "Short Name", "BAND"]], on="Feeder")
+feeder_summary = feeder_summary.sort_values("BAND")
 if selected_band != "All":
     feeder_summary = feeder_summary[feeder_summary["BAND"] == selected_band]
 st.dataframe(feeder_summary[["Short Name", "feeder_energy_lost_kwh", "feeder_financial_loss_naira"]].style.format({"feeder_energy_lost_kwh": "{:,.2f}", "feeder_financial_loss_naira": "₦{:,.2f}"}))
@@ -247,6 +262,10 @@ num_customers = st.number_input(
 st.subheader("Theft Analysis")
 st.markdown("**Building Theft Probability Heatmap**")
 filtered_customers = customer_monthly[customer_monthly["NAME_OF_DT"] == selected_dt_name]
+if selected_business_unit != "All":
+    filtered_customers = filtered_customers[filtered_customers["BUSINESS_UNIT"] == selected_business_unit]
+if selected_undertaking != "All":
+    filtered_customers = filtered_customers[filtered_customers["UNDERTAKING"] == selected_undertaking]
 if num_customers > 0:
     filtered_customers = filtered_customers.sort_values(by="theft_probability", ascending=False).head(num_customers)
 pivot_data = filtered_customers.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean")
@@ -271,7 +290,7 @@ if not month_customers.empty:
                                 "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", 
                                 "Billing_Type", "feeder_score", "dt_score", "meter_status_score", 
                                 "account_type_score", "customer_account_type_score", "billing_type_score", 
-                                "customer_category_score", "theft_probability", "risk_tier"]].style.format({
+                                "customer_category_score", "energy_billed_score", "theft_probability", "risk_tier"]].style.format({
         "billed_kwh": "{:.2f}",
         "feeder_score": "{:.3f}",
         "dt_score": "{:.3f}",
@@ -280,6 +299,7 @@ if not month_customers.empty:
         "customer_account_type_score": "{:.3f}",
         "billing_type_score": "{:.3f}",
         "customer_category_score": "{:.3f}",
+        "energy_billed_score": "{:.3f}",
         "theft_probability": "{:.3f}"
     }).highlight_max(subset=["theft_probability"], color="lightcoral")
     st.dataframe(styled_df)
@@ -293,7 +313,7 @@ if not month_customers.empty:
                            "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", 
                            "Billing_Type", "feeder_score", "dt_score", "meter_status_score", 
                            "account_type_score", "customer_account_type_score", "billing_type_score", 
-                           "customer_category_score", "theft_probability", "risk_tier"]].to_csv(index=False)
+                           "customer_category_score", "energy_billed_score", "theft_probability", "risk_tier"]].to_csv(index=False)
     st.download_button(
         label=f"Download Customer List ({selected_month})",
         data=csv,
@@ -313,6 +333,10 @@ avg_energy_lost = filtered_dt["energy_lost_kwh"].mean()
 avg_financial_loss = filtered_dt["financial_loss_naira"].mean()
 st.write(f"Average Monthly Energy Lost: {avg_energy_lost:,.2f} kWh")
 st.write(f"Average Monthly Financial Loss: ₦{avg_financial_loss:,.2f}")
+
+# Unbilled Energy Accuracy
+st.subheader("Unbilled Energy Accuracy Check")
+st.dataframe(dt_df[["New Unique DT Nomenclature", "Provided Avg Monthly Unbilled Energy (kWh)", "Calculated Avg Monthly Unbilled Energy (kWh)", "Unbilled Energy Accuracy"]].style.format({"Provided Avg Monthly Unbilled Energy (kWh)": "{:.2f}", "Calculated Avg Monthly Unbilled Energy (kWh)": "{:.2f}"}))
 
 # Footer
 st.markdown("Built by Elvis for Ikeja Electric SIWES III. Field testing version, August 2025.")
