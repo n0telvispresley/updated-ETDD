@@ -27,12 +27,11 @@ def get_short_name(name, is_dt=False, band_df=None):
             feeder_short = parts[-1].strip()
         # Map to Feeder Band Short Name if available
         if band_df is not None:
-            # Escape special regex characters
             try:
                 matching_feeder = band_df[band_df["Feeder"].str.contains(re.escape(feeder_short), case=False, na=False)]
                 if not matching_feeder.empty:
                     return matching_feeder["Short Name"].iloc[0]
-            except re.PatternError:
+            except (re.PatternError, TypeError):
                 pass  # Fallback if regex fails
         return feeder_short
     return name if isinstance(name, str) else ""
@@ -117,6 +116,36 @@ if customer_df.empty:
     st.error("customer_df is empty.")
     st.stop()
 
+# Filter for valid feeders from Feeder Data
+valid_feeders = set(feeder_df["Feeder"].astype(str).str.strip().str.upper())
+customer_invalid_feeders = set(customer_df["NAME_OF_FEEDER"].unique()) - valid_feeders
+dt_invalid_feeders = set(dt_df["New Unique DT Nomenclature"].apply(
+    lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
+).unique()) - valid_feeders
+
+# Create error report
+error_report = []
+if customer_invalid_feeders:
+    for feeder in customer_invalid_feeders:
+        count = len(customer_df[customer_df["NAME_OF_FEEDER"] == feeder])
+        error_report.append({"Feeder": feeder, "Source": "Customer Data", "Record Count": count})
+if dt_invalid_feeders:
+    for feeder in dt_invalid_feeders:
+        count = len(dt_df[dt_df["New Unique DT Nomenclature"].str.startswith(feeder)])
+        error_report.append({"Feeder": feeder, "Source": "Transformer Data", "Record Count": count})
+error_report_df = pd.DataFrame(error_report)
+
+# Filter data
+customer_df = customer_df[customer_df["NAME_OF_FEEDER"].isin(valid_feeders)]
+dt_df = dt_df[dt_df["New Unique DT Nomenclature"].apply(
+    lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
+).isin(valid_feeders)]
+if customer_df.empty or dt_df.empty:
+    st.error("No valid data after filtering for Feeder Data feeders.")
+    st.write("customer_df size:", len(customer_df))
+    st.write("dt_df size:", len(dt_df))
+    st.stop()
+
 # Add scores to customer_df
 customer_df["meter_status_score"] = np.where(customer_df["METER_STATUS"] == "NOT METERED", 0.9, 0.2)
 customer_df["account_type_score"] = np.where(customer_df["ACCOUNT_TYPE"] == "POSTPAID", 0.8, 0.3)
@@ -140,13 +169,6 @@ dt_df["Feeder_Short"] = dt_df["Feeder_Short"].apply(
     lambda x: x if x in valid_feeders_short else "UNKNOWN"
 )
 
-# Filter customer_df for valid feeders
-valid_feeders = set(feeder_df["Feeder"].astype(str).str.strip().str.upper())
-missing_feeders = set(customer_df["NAME_OF_FEEDER"].unique()) - valid_feeders
-if missing_feeders:
-    st.warning(f"Feeders not in Feeder Data: {', '.join(sorted(missing_feeders))}. These customers are excluded.")
-customer_df = customer_df[customer_df["NAME_OF_FEEDER"].isin(valid_feeders)]
-
 # Merge tariffs
 tariff_matches = customer_df["TARIFF"].isin(tariff_df["Tariff"])
 if not tariff_matches.all():
@@ -168,17 +190,16 @@ with col2:
     selected_ut = st.selectbox("Select Undertaking", ut_options)
 with col3:
     customer_df_ut = customer_df_bu[customer_df_bu["UNDERTAKING"] == selected_ut]
-    valid_feeder_short = set(customer_df_ut["Feeder_Short"].unique()) & valid_feeders_short
-    feeder_options_display = sorted(valid_feeder_short)
-    if not feeder_options_display:
-        st.error(f"No valid feeders for BU {selected_bu}, UT {selected_ut}.")
+    feeder_options = sorted(feeder_df["Feeder_Short"].unique())
+    if not feeder_options:
+        st.error("No feeders available in Feeder Data.")
         st.stop()
-    selected_feeder_short = st.selectbox("Select Feeder", feeder_options_display)
+    selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
 with col4:
     dt_df_filtered = dt_df[dt_df["Feeder_Short"] == selected_feeder_short]
     dt_options = sorted(dt_df_filtered["DT_Short_Name"].unique())
     if not dt_options:
-        st.error(f"No DTs available for feeder {selected_feeder_short}. Check New Unique DT Nomenclature in Transformer Data.")
+        st.error(f"No DTs available for feeder {selected_feeder_short}.")
         st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
         st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
         st.write("dt_df Head:", dt_df.head())
@@ -190,13 +211,14 @@ with col5:
 
 # Filter data by BU and UT
 customer_df = customer_df_ut
-dt_df = dt_df[dt_df["Feeder_Short"].isin(customer_df["Feeder_Short"])]
-feeder_df = feeder_df[feeder_df["Feeder_Short"].isin(customer_df["Feeder_Short"])]
+dt_df = dt_df[dt_df["Feeder_Short"].isin(feeder_df["Feeder_Short"])]
+feeder_df = feeder_df[feeder_df["Feeder_Short"].isin(feeder_df["Feeder_Short"])]
 
 # Debug
 if st.checkbox("Debug: Data"):
     st.write("Valid Feeders (Feeder Data):", sorted(feeder_df["Feeder_Short"].unique()))
-    st.write("Missing Feeders (Customer Data):", sorted(missing_feeders))
+    st.write("Invalid Feeders (Customer Data):", sorted(customer_invalid_feeders))
+    st.write("Invalid Feeders (Transformer Data):", sorted(dt_invalid_feeders))
     st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
     st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
     st.write("customer_df Columns:", customer_df.columns.tolist())
@@ -206,6 +228,19 @@ if st.checkbox("Debug: Data"):
     st.write("Filtered Customer Count:", len(customer_df))
     st.write("Filtered DT Count:", len(dt_df))
     st.write("Filtered Feeder Count:", len(feeder_df))
+
+# Error Report Download
+if not error_report_df.empty:
+    st.subheader("Error Report: Invalid Feeders")
+    st.write("The following feeders were found in Customer Data or Transformer Data but not in Feeder Data and were excluded from analysis:")
+    st.dataframe(error_report_df)
+    csv = error_report_df.to_csv(index=False)
+    st.download_button(
+        label="Download Error Report",
+        data=csv,
+        file_name="invalid_feeders_report.csv",
+        mime="text/csv"
+    )
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -244,106 +279,148 @@ except Exception as e:
     st.stop()
 
 # DT consumption
-dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
-dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
+try:
+    dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
+    dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
+except Exception as e:
+    st.error(f"DT melt failed: {e}")
+    st.write("dt_df Columns:", dt_df.columns.tolist())
+    st.stop()
 
 # Billed energy
-customer_agg = customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].sum().reset_index()
-customer_agg.rename(columns={"billed_kwh": "total_billed_kwh"}, inplace=True)
+try:
+    customer_agg = customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].sum().reset_index()
+    customer_agg.rename(columns={"billed_kwh": "total_billed_kwh"}, inplace=True)
+except Exception as e:
+    st.error(f"Customer aggregation failed: {e}")
+    st.write("customer_monthly:", customer_monthly.head())
+    st.stop()
 
 # DT scores
-dt_merged = dt_agg.merge(customer_agg, left_on=["New Unique DT Nomenclature", "month"], right_on=["NAME_OF_DT", "month"], how="left")
-dt_merged["total_billed_kwh"] = dt_merged["total_billed_kwh"].fillna(0)
-dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0, 1)).clip(0, 1)
-dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_billed_kwh"]
-dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
+try:
+    dt_merged = dt_agg.merge(customer_agg, left_on=["New Unique DT Nomenclature", "month"], right_on=["NAME_OF_DT", "month"], how="left")
+    dt_merged["total_billed_kwh"] = dt_merged["total_billed_kwh"].fillna(0)
+    dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0, 1)).clip(0, 1)
+    dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_billed_kwh"]
+    dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
+except Exception as e:
+    st.error(f"DT merge failed: {e}")
+    st.write("dt_agg:", dt_agg.head())
+    st.write("customer_agg:", customer_agg.head())
+    st.stop()
 
 # Feeder scores
-feeder_monthly = feeder_df.melt(id_vars=["Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
-feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
-feeder_agg = customer_monthly.groupby(["Feeder_Short", "month"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
-feeder_merged = feeder_monthly.merge(feeder_agg, on=["Feeder_Short", "month"], how="left")
-feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
-feeder_merged["feeder_score"] = (1 - feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0, 1)).clip(0, 1)
-feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["feeder_energy_kwh"] - feeder_merged["total_billed_kwh"]
-feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * 209.5
+try:
+    feeder_monthly = feeder_df.melt(id_vars=["Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
+    feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
+    feeder_agg = customer_monthly.groupby(["Feeder_Short", "month"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
+    feeder_merged = feeder_monthly.merge(feeder_agg, on=["Feeder_Short", "month"], how="left")
+    feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
+    feeder_merged["feeder_score"] = (1 - feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0, 1)).clip(0, 1)
+    feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["feeder_energy_kwh"] - feeder_merged["total_billed_kwh"]
+    feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * 209.5
+except Exception as e:
+    st.error(f"Feeder merge failed: {e}")
+    st.write("feeder_monthly:", feeder_monthly.head())
+    st.write("feeder_agg:", feeder_agg.head())
+    st.stop()
 
 # DT Theft Probability Heatmap
 st.subheader("DT Theft Probability Heatmap")
-filtered_dt_agg = dt_agg[dt_agg["Feeder_Short"] == selected_feeder_short]
-if filtered_dt_agg.empty:
-    st.error(f"No DT data for feeder {selected_feeder_short}.")
-    st.write("dt_agg:", dt_agg.head())
-    st.write("dt_merged:", dt_merged.head())
-    st.stop()
-filtered_dt_agg = filtered_dt_agg.merge(dt_merged[["New Unique DT Nomenclature", "month", "dt_score"]], on=["New Unique DT Nomenclature", "month"], how="left")
-filtered_dt_agg["dt_score"] = filtered_dt_agg["dt_score"].fillna(0)
-dt_pivot = filtered_dt_agg.pivot_table(index="DT_Short_Name", columns="month", values="dt_score", aggfunc="mean")
-if not dt_pivot.empty:
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(dt_pivot, cmap="YlOrRd", cbar_kws={"label": "DT Theft Score"})
-    plt.title(f"DT Theft Score for {selected_feeder_short}")
-    st.pyplot(plt.gcf())
-    plt.close()
-else:
-    st.error(f"No DT data for {selected_feeder_short} after pivoting.")
-    st.write("filtered_dt_agg:", filtered_dt_agg.head())
+try:
+    filtered_dt_agg = dt_agg[dt_agg["Feeder_Short"] == selected_feeder_short]
+    if filtered_dt_agg.empty:
+        st.error(f"No DT data for feeder {selected_feeder_short}.")
+        st.write("dt_agg:", dt_agg.head())
+        st.write("dt_merged:", dt_merged.head())
+        st.stop()
+    filtered_dt_agg = filtered_dt_agg.merge(dt_merged[["New Unique DT Nomenclature", "month", "dt_score"]], on=["New Unique DT Nomenclature", "month"], how="left")
+    filtered_dt_agg["dt_score"] = filtered_dt_agg["dt_score"].fillna(0)
+    dt_pivot = filtered_dt_agg.pivot_table(index="DT_Short_Name", columns="month", values="dt_score", aggfunc="mean")
+    if not dt_pivot.empty:
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(dt_pivot, cmap="YlOrRd", cbar_kws={"label": "DT Theft Score"})
+        plt.title(f"DT Theft Score for {selected_feeder_short}")
+        st.pyplot(plt.gcf())
+        plt.close()
+    else:
+        st.error(f"No DT data for {selected_feeder_short} after pivoting.")
+        st.write("filtered_dt_agg:", filtered_dt_agg.head())
+        st.stop()
+except Exception as e:
+    st.error(f"DT heatmap failed: {e}")
+    st.write("filtered_dt_agg:", filtered_dt_agg.head() if 'filtered_dt_agg' in locals() else "Not created")
     st.stop()
 
 # Customer scores
-customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
-customer_monthly = customer_monthly.merge(feeder_merged[["Feeder_Short", "month", "feeder_score"]], on=["Feeder_Short", "month"], how="left")
-customer_monthly = customer_monthly.merge(dt_merged[["New Unique DT Nomenclature", "month", "dt_score"]], left_on=["NAME_OF_DT", "month"], right_on=["New Unique DT Nomenclature", "month"], how="left")
-customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
-customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
-customer_monthly["theft_probability"] = (
-    0.15 * customer_monthly["feeder_score"] +
-    0.25 * customer_monthly["dt_score"] +
-    0.15 * customer_monthly["meter_status_score"] +
-    0.15 * customer_monthly["account_type_score"] +
-    0.15 * customer_monthly["customer_account_type_score"] +
-    0.15 * customer_monthly["billing_type_score"] +
-    0.10 * customer_monthly["customer_category_score"] +
-    0.15 * customer_monthly["energy_billed_score"]
-).clip(0, 1)
-customer_monthly["risk_tier"] = pd.cut(customer_monthly["theft_probability"], bins=[0, 0.4, 0.7, 1.0], labels=["Low", "Medium", "High"], include_lowest=True)
+try:
+    customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
+    customer_monthly = customer_monthly.merge(feeder_merged[["Feeder_Short", "month", "feeder_score"]], on=["Feeder_Short", "month"], how="left")
+    customer_monthly = customer_monthly.merge(dt_merged[["New Unique DT Nomenclature", "month", "dt_score"]], left_on=["NAME_OF_DT", "month"], right_on=["New Unique DT Nomenclature", "month"], how="left")
+    customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
+    customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
+    customer_monthly["theft_probability"] = (
+        0.15 * customer_monthly["feeder_score"] +
+        0.25 * customer_monthly["dt_score"] +
+        0.15 * customer_monthly["meter_status_score"] +
+        0.15 * customer_monthly["account_type_score"] +
+        0.15 * customer_monthly["customer_account_type_score"] +
+        0.15 * customer_monthly["billing_type_score"] +
+        0.10 * customer_monthly["customer_category_score"] +
+        0.15 * customer_monthly["energy_billed_score"]
+    ).clip(0, 1)
+    customer_monthly["risk_tier"] = pd.cut(customer_monthly["theft_probability"], bins=[0, 0.4, 0.7, 1.0], labels=["Low", "Medium", "High"], include_lowest=True)
+except Exception as e:
+    st.error(f"Customer scoring failed: {e}")
+    st.write("customer_monthly:", customer_monthly.head())
+    st.stop()
 
 # Customer Heatmap
 st.subheader("Theft Analysis")
-filtered_customers = customer_monthly[customer_monthly["DT_Short_Name"] == selected_dt_short]
-num_customers = st.number_input("Number of high-risk customers (0 for all)", min_value=0, value=10, step=1)
-if num_customers > 0:
-    filtered_customers = filtered_customers.sort_values(by="theft_probability", ascending=False).head(num_customers)
-pivot_data = filtered_customers.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean")
-if not pivot_data.empty:
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
-    plt.title(f"Theft Probability for {selected_dt_short} ({selected_feeder_short})")
-    st.pyplot(plt.gcf())
-    plt.close()
-else:
-    st.warning(f"No customer data for {selected_dt_short}.")
-    st.write("filtered_customers:", filtered_customers.head())
+try:
+    filtered_customers = customer_monthly[customer_monthly["DT_Short_Name"] == selected_dt_short]
+    num_customers = st.number_input("Number of high-risk customers (0 for all)", min_value=0, value=10, step=1)
+    if num_customers > 0:
+        filtered_customers = filtered_customers.sort_values(by="theft_probability", ascending=False).head(num_customers)
+    pivot_data = filtered_customers.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean")
+    if not pivot_data.empty:
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
+        plt.title(f"Theft Probability for {selected_dt_short} ({selected_feeder_short})")
+        st.pyplot(plt.gcf())
+        plt.close()
+    else:
+        st.warning(f"No customer data for {selected_dt_short}.")
+        st.write("filtered_customers:", filtered_customers.head())
+except Exception as e:
+    st.error(f"Customer heatmap failed: {e}")
+    st.write("filtered_customers:", filtered_customers.head() if 'filtered_customers' in locals() else "Not created")
+    st.stop()
 
 # Customer List
 st.subheader(f"Customers under {selected_dt_short} ({selected_feeder_short}, {selected_month})")
-if selected_month == "All":
-    month_customers = filtered_customers.groupby(["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type"]).agg({
-        "billed_kwh": "sum",
-        "theft_probability": "mean",
-        "risk_tier": lambda x: pd.Series(x).mode()[0]
-    }).reset_index()
-else:
-    month_customers = filtered_customers[filtered_customers["month"] == selected_month]
-if not month_customers.empty:
-    styled_df = month_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "theft_probability", "risk_tier"]].style.format({
-        "billed_kwh": "{:.2f}",
-        "theft_probability": "{:.3f}"
-    }).highlight_max(subset=["theft_probability"], color="lightcoral")
-    st.dataframe(styled_df)
-else:
-    st.warning(f"No customers for {selected_dt_short} ({selected_month}).")
+try:
+    if selected_month == "All":
+        month_customers = filtered_customers.groupby(["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type"]).agg({
+            "billed_kwh": "sum",
+            "theft_probability": "mean",
+            "risk_tier": lambda x: pd.Series(x).mode()[0]
+        }).reset_index()
+    else:
+        month_customers = filtered_customers[filtered_customers["month"] == selected_month]
+    if not month_customers.empty:
+        styled_df = month_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "theft_probability", "risk_tier"]].style.format({
+            "billed_kwh": "{:.2f}",
+            "theft_probability": "{:.3f}"
+        }).highlight_max(subset=["theft_probability"], color="lightcoral")
+        st.dataframe(styled_df)
+    else:
+        st.warning(f"No customers for {selected_dt_short} ({selected_month}).")
+        st.write("filtered_customers:", filtered_customers.head())
+except Exception as e:
+    st.error(f"Customer list failed: {e}")
     st.write("filtered_customers:", filtered_customers.head())
+    st.stop()
 
 # CSV Export
 st.subheader("Export Customer Data")
