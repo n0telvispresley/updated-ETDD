@@ -28,8 +28,8 @@ try:
         converters={
             "Feeder Data": {"Feeder": preserve_exact_string, "Feeder No": preserve_exact_string},
             "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "DT Number": preserve_exact_string, "Ownership": preserve_exact_string, "Connection Status": preserve_exact_string},
-            "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "DT_NO": preserve_exact_string, "FEEDER_NO": preserve_exact_string},
-            "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "DT_NO": preserve_exact_string, "FEEDER_NO": preserve_exact_string},
+            "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string},
+            "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string},
             "Feeder Band": {"BAND": preserve_exact_string, "Feeder": preserve_exact_string, "Short Name": preserve_exact_string},
             "Customer Tariffs": {"Tariff": preserve_exact_string}
         }
@@ -65,13 +65,10 @@ if st.checkbox("Show debug info"):
     st.write("Sample METER_NUMBER values:", customer_df["METER_NUMBER"].head().tolist())
     st.write("Count of empty METER_NUMBER:", (customer_df["METER_NUMBER"] == "").sum())
     st.write("Sample NAME_OF_DT values:", customer_df["NAME_OF_DT"].head().tolist())
-    st.write("Sample DT_NO values:", customer_df["DT_NO"].head().tolist())
     st.write("Sample NAME_OF_FEEDER values:", customer_df["NAME_OF_FEEDER"].head().tolist())
-    st.write("Sample FEEDER_NO values:", customer_df["FEEDER_NO"].head().tolist())
     st.write("Transformer JAN-JUN dtypes:", dt_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].dtypes)
     st.write("Sample Transformer JAN-JUN values:", dt_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].head().to_dict())
     st.write("Sample Transformer New Unique DT Nomenclature:", dt_df["New Unique DT Nomenclature"].head().tolist())
-    st.write("Sample Transformer DT Number:", dt_df["DT Number"].head().tolist())
     st.write("PPD JAN-JUN dtypes:", ppd_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].dtypes)
     st.write("Sample PPD JAN-JUN values:", ppd_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].head().to_dict())
 
@@ -123,12 +120,6 @@ def map_dt_to_feeder(dt_name):
 dt_df["Feeder"] = dt_df["New Unique DT Nomenclature"].apply(map_dt_to_feeder)
 dt_df = dt_df.dropna(subset=["Feeder"])
 
-# Validate DT_NO and DT Number
-dt_validation = customer_df.merge(dt_df[["New Unique DT Nomenclature", "DT Number"]], left_on="DT_NO", right_on="DT Number", how="left")
-unmatched_dts = dt_validation[dt_validation["New Unique DT Nomenclature"].isna()]["DT_NO"].unique()
-if len(unmatched_dts) > 0:
-    st.warning(f"Unmatched DT_NO values: {unmatched_dts.tolist()}")
-
 # Merge with tariffs
 customer_df = customer_df.merge(tariff_df[["Tariff", "Rate (₦)"]], left_on="TARIFF", right_on="Tariff", how="left")
 customer_df["Rate (₦)"] = customer_df["Rate (₦)"].fillna(209.5)
@@ -171,6 +162,8 @@ dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
 if st.checkbox("Debug: Merge inputs for customer_monthly"):
     st.write("customer_monthly NAME_OF_DT unique values:", customer_monthly["NAME_OF_DT"].unique().tolist())
     st.write("dt_merged New Unique DT Nomenclature unique values:", dt_merged["New Unique DT Nomenclature"].unique().tolist())
+    st.write("customer_monthly NAME_OF_FEEDER unique values:", customer_monthly["NAME_OF_FEEDER"].unique().tolist())
+    st.write("feeder_merged Feeder unique values:", feeder_merged["Feeder"].unique().tolist())
     st.write("customer_monthly month unique values:", customer_monthly["month"].unique().tolist())
     st.write("dt_merged month unique values:", dt_merged["month"].unique().tolist())
 
@@ -244,13 +237,19 @@ with col2:
         feeder_options = band_df.sort_values("BAND")["Short Name"].tolist()
     else:
         feeder_options = band_df[band_df["BAND"] == selected_band].sort_values("BAND")["Short Name"].tolist()
+    if not feeder_options:
+        st.error("No feeders available for the selected band.")
+        st.stop()
     selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
     selected_feeder = band_df[band_df["Short Name"] == selected_feeder_short]["Feeder"].iloc[0] if selected_feeder_short else None
 with col3:
     dt_options = dt_df[dt_df["Feeder"] == selected_feeder]["New Unique DT Nomenclature"].tolist()
+    if not dt_options:
+        st.error(f"No DTs available for feeder {selected_feeder_short}. Check Feeder-to-DT mapping.")
+        st.stop()
     dt_options = [f"{dt} (FLAG: Inactive with Energy)" if dt_df[dt_df["New Unique DT Nomenclature"] == dt]["Flag"].iloc[0] else dt for dt in dt_options]
     selected_dt = st.selectbox("Select DT", dt_options)
-    selected_dt_name = selected_dt.replace(" (FLAG: Inactive with Energy)", "")
+    selected_dt_name = str(selected_dt).replace(" (FLAG: Inactive with Energy)", "") if selected_dt else ""
 with col4:
     business_unit_options = ["All"] + sorted(customer_df["BUSINESS_UNIT"].unique())
     selected_business_unit = st.selectbox("Select Business Unit", business_unit_options)
@@ -298,7 +297,7 @@ if not pivot_data.empty:
     st.pyplot(plt.gcf())
     plt.close()
 else:
-    st.error("No valid data for heatmap. Check ACCOUNT_NUMBER and data consistency.")
+    st.error("No valid data for heatmap. Check ACCOUNT_NUMBER and NAME_OF_DT consistency.")
 
 # Customer List
 st.subheader(f"Customers under {selected_dt_name} ({selected_feeder_short}, {selected_month})")
