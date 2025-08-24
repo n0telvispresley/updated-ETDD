@@ -683,4 +683,5 @@ if not month_customers.empty:
     st.download_button(label=f"Download Customer List ({period_label})", data=csv, file_name=f"theft_analysis_{selected_dt_short}_{selected_feeder_short}_{period_label}.csv", mime="text/csv")
 
 # Footer
-st.markdown("Built by Elvis for Ikeja Electric SIWES III. August 2025.")
+st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
+
