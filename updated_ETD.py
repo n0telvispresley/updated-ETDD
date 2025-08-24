@@ -52,10 +52,11 @@ feeder_df = sheets.get("Feeder Data")
 dt_df = sheets.get("Transformer Data")
 ppm_df = sheets.get("Customer Data_PPM")
 ppd_df = sheets.get("Customer Data_PPD")
+band_df = sheets.get("Feeder Band")
 tariff_df = sheets.get("Customer Tariffs")
 
 # Check if sheets loaded correctly
-if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, tariff_df]):
+if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_df]):
     st.error("One or more sheets missing.")
     st.stop()
 
@@ -63,16 +64,37 @@ if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, tariff_df]):
 required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING", "TARIFF"]
 required_dt_cols = ["New Unique DT Nomenclature"]
 required_feeder_cols = ["Feeder"]
-for df, name, cols in [(ppm_df, "Customer Data_PPM", required_customer_cols), (ppd_df, "Customer Data_PPD", required_customer_cols), (dt_df, "Transformer Data", required_dt_cols), (feeder_df, "Feeder Data", required_feeder_cols)]:
+required_band_cols = ["Feeder", "BAND"]
+required_tariff_cols = ["Tariff"]
+for df, name, cols in [
+    (ppm_df, "Customer Data_PPM", required_customer_cols),
+    (ppd_df, "Customer Data_PPD", required_customer_cols),
+    (dt_df, "Transformer Data", required_dt_cols),
+    (feeder_df, "Feeder Data", required_feeder_cols),
+    (band_df, "Feeder Band", required_band_cols),
+    (tariff_df, "Customer Tariffs", required_tariff_cols)
+]:
     missing_cols = [col for col in cols if col not in df.columns]
     if missing_cols:
         st.error(f"Missing columns in {name}: {missing_cols}")
         st.stop()
 
+# Validate month columns
+months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
+for df, name in [(ppm_df, "Customer Data_PPM"), (ppd_df, "Customer Data_PPD"), (feeder_df, "Feeder Data"), (dt_df, "Transformer Data")]:
+    missing_months = [m for m in months if m not in df.columns]
+    if missing_months:
+        st.warning(f"Missing month columns in {name}: {missing_months}. Filling with 0.")
+        for m in missing_months:
+            df[m] = 0
+
 # Handle missing columns
-for df, col in [(ppm_df, "TARIFF"), (ppd_df, "TARIFF"), (tariff_df, "Tariff")]:
+for df, col in [(ppm_df, "TARIFF"), (ppd_df, "TARIFF"), (band_df, "BAND"), (tariff_df, "Tariff")]:
     if col not in df.columns:
         df[col] = ""
+if "Short Name" not in band_df.columns:
+    band_df["Short Name"] = band_df["Feeder"].apply(lambda x: get_short_name(x))
+
 # Handle Rate column
 rate_col = next((col for col in ["Rate (NGN)", "Rate (₦)", "Rate", "RATE", "Rate(NGN)", "Rate(₦)"] if col in tariff_df.columns), None)
 if rate_col:
@@ -80,9 +102,29 @@ if rate_col:
 else:
     tariff_df["Rate (NGN)"] = 209.5
 
+# Compute band-specific tariff rates
+band_tariffs = {
+    "A": ["A-MD1", "A-MD2", "A-Non MD"],
+    "B": ["B-MD1", "B-MD2", "B-Non MD"],
+    "C": ["C-MD1", "C-MD2", "C-Non MD"],
+    "D": ["D-MD1", "D-MD2", "D-Non MD"],
+    "E": ["E-MD1", "E-MD2", "E-Non MD"]
+}
+band_rates = {}
+for band, tariffs in band_tariffs.items():
+    rates = tariff_df[tariff_df["Tariff"].isin(tariffs)]["Rate (NGN)"]
+    band_rates[band] = rates.mean() if not rates.empty else 209.5
+
+# Map feeders to bands
+feeder_df = feeder_df.merge(band_df[["Feeder", "BAND"]], on="Feeder", how="left")
+feeder_df["BAND"] = feeder_df["BAND"].fillna("Unknown")
+feeder_df["Tariff_Rate"] = feeder_df["BAND"].map(band_rates).fillna(209.5)
+if feeder_df["BAND"].str.contains("Unknown").any():
+    st.warning("Some feeders not mapped to bands. Using default tariff rate (209.5 NGN/kWh).")
+
 # Normalize names
 for col, df in [
-    ("Feeder", feeder_df), ("NAME_OF_FEEDER", ppm_df), ("NAME_OF_FEEDER", ppd_df),
+    ("Feeder", feeder_df), ("NAME_OF_FEEDER", ppm_df), ("NAME_OF_FEEDER", ppd_df), ("Feeder", band_df),
     ("NAME_OF_DT", ppm_df), ("NAME_OF_DT", ppd_df), ("New Unique DT Nomenclature", dt_df),
     ("TARIFF", ppm_df), ("TARIFF", ppd_df), ("Tariff", tariff_df),
     ("BUSINESS_UNIT", ppm_df), ("BUSINESS_UNIT", ppd_df),
@@ -142,6 +184,10 @@ if dt_df.empty or customer_df.empty:
     st.write("dt_df size:", len(dt_df))
     st.write("customer_df size:", len(customer_df))
     st.stop()
+
+# Map DTs to feeder tariff rates
+dt_df = dt_df.merge(feeder_df[["Feeder", "Tariff_Rate"]], on="Feeder", how="left")
+dt_df["Tariff_Rate"] = dt_df["Tariff_Rate"].fillna(209.5)
 
 # Add scores to customer_df
 customer_df["meter_status_score"] = np.where(customer_df["METER_STATUS"] == "NOT METERED", 0.9, 0.2)
@@ -240,6 +286,7 @@ if st.checkbox("Debug: Data"):
     st.write("customer_monthly Columns:", customer_monthly.columns.tolist() if 'customer_monthly' in locals() else "customer_monthly not created yet")
     st.write("dt_agg Columns:", dt_agg.columns.tolist() if 'dt_agg' in locals() else "dt_agg not created yet")
     st.write("dt_merged:", dt_merged.head() if 'dt_merged' in locals() else "dt_merged not created yet")
+    st.write("Band Rates:", band_rates)
     st.write("Filtered Customer Count:", len(customer_df))
     st.write("Filtered DT Count:", len(dt_df))
     st.write("Filtered Feeder Count:", len(feeder_df))
@@ -258,7 +305,6 @@ if not error_report_df.empty:
     )
 
 # Data preprocessing
-months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
 for month in months:
     for df, unit in [(feeder_df, 1000), (ppm_df, 1), (ppd_df, 0.001)]:
         col = f"{month} (kWh)"
@@ -295,7 +341,7 @@ except Exception as e:
 
 # DT consumption
 try:
-    dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
+    dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
     dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
 except Exception as e:
     st.error(f"DT melt failed: {e}")
@@ -327,7 +373,7 @@ try:
     dt_merged["total_billed_kwh"] = dt_merged["total_billed_kwh"].fillna(0)
     dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0, 1)).clip(0, 1)
     dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_billed_kwh"]
-    dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
+    dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * dt_merged["Tariff_Rate"]
 except Exception as e:
     st.error(f"DT merge failed: {e}")
     st.write("dt_agg:", dt_agg.head())
@@ -336,7 +382,7 @@ except Exception as e:
 
 # Feeder scores
 try:
-    feeder_monthly = feeder_df.melt(id_vars=["Feeder", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
+    feeder_monthly = feeder_df.melt(id_vars=["Feeder", "Feeder_Short", "Tariff_Rate"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
     feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
     if selected_month != "All":
         feeder_monthly = feeder_monthly[feeder_monthly["month"] == selected_month]
@@ -345,7 +391,7 @@ try:
     feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
     feeder_merged["feeder_score"] = (1 - feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0, 1)).clip(0, 1)
     feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["feeder_energy_kwh"] - feeder_merged["total_billed_kwh"]
-    feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * 209.5
+    feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * feeder_merged["Tariff_Rate"]
 except Exception as e:
     st.error(f"Feeder merge failed: {e}")
     st.write("feeder_monthly:", feeder_monthly.head())
@@ -362,7 +408,7 @@ try:
         "feeder_financial_loss_naira": "sum"
     }).reset_index()
     feeder_summary.columns = ["Feeder", "Month", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]
-    feeder_summary = feeder_summary[["Feeder", "Month", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]]
+    feeder_summary = feeder_summary[["Feeder", "Month", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]
     if not feeder_summary.empty:
         st.dataframe(feeder_summary.style.format({
             "Energy Supplied (kWh)": "{:.2f}",
