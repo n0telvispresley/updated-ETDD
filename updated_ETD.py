@@ -14,15 +14,22 @@ def preserve_exact_string(value):
     return str(value)
 
 # Function to extract short feeder and DT names
-def get_short_name(name, is_dt=False):
+def get_short_name(name, is_dt=False, band_df=None):
     if isinstance(name, str) and name and "-" in name:
         parts = name.split("-")
         if is_dt:
             return parts[-1].strip()  # DT name is last part
         # Feeder_Short: second-to-last part if >= 3 parts, else last part
         if len(parts) >= 3:
-            return parts[-2].strip()
-        return parts[-1].strip()
+            feeder_short = parts[-2].strip()
+        else:
+            feeder_short = parts[-1].strip()
+        # Map to Feeder Band Short Name if available
+        if band_df is not None:
+            matching_feeder = band_df[band_df["Feeder"].str.contains(feeder_short, case=False, na=False)]
+            if not matching_feeder.empty:
+                return matching_feeder["Short Name"].iloc[0]
+        return feeder_short
     return name if isinstance(name, str) else ""
 
 # File uploader
@@ -40,8 +47,8 @@ try:
         converters={
             "Feeder Data": {"Feeder": preserve_exact_string},
             "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string},
-            "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
-            "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
+            "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
+            "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
             "Feeder Band": {"BAND": preserve_exact_string, "Feeder": preserve_exact_string, "Short Name": preserve_exact_string},
             "Customer Tariffs": {"Tariff": preserve_exact_string}
         }
@@ -64,7 +71,7 @@ if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_d
     st.stop()
 
 # Validate column names
-required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT", "TARIFF"]
+required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING", "TARIFF"]
 required_dt_cols = ["New Unique DT Nomenclature"]
 required_feeder_cols = ["Feeder"]
 for df, name, cols in [(ppm_df, "Customer Data_PPM", required_customer_cols), (ppd_df, "Customer Data_PPD", required_customer_cols), (dt_df, "Transformer Data", required_dt_cols), (feeder_df, "Feeder Data", required_feeder_cols)]:
@@ -78,7 +85,7 @@ for df, col in [(ppm_df, "TARIFF"), (ppd_df, "TARIFF"), (band_df, "BAND"), (tari
     if col not in df.columns:
         df[col] = ""
 if "Short Name" not in band_df.columns:
-    band_df["Short Name"] = band_df["Feeder"].apply(get_short_name)
+    band_df["Short Name"] = band_df["Feeder"].apply(lambda x: get_short_name(x, band_df=band_df))
 
 # Handle Rate column
 rate_col = next((col for col in ["Rate (NGN)", "Rate (₦)", "Rate", "RATE", "Rate(NGN)", "Rate(₦)"] if col in tariff_df.columns), None)
@@ -91,7 +98,9 @@ else:
 for col, df in [
     ("Feeder", feeder_df), ("NAME_OF_FEEDER", ppm_df), ("NAME_OF_FEEDER", ppd_df), ("Feeder", band_df),
     ("NAME_OF_DT", ppm_df), ("NAME_OF_DT", ppd_df), ("New Unique DT Nomenclature", dt_df),
-    ("TARIFF", ppm_df), ("TARIFF", ppd_df), ("Tariff", tariff_df)
+    ("TARIFF", ppm_df), ("TARIFF", ppd_df), ("Tariff", tariff_df),
+    ("BUSINESS_UNIT", ppm_df), ("BUSINESS_UNIT", ppd_df),
+    ("UNDERTAKING", ppm_df), ("UNDERTAKING", ppd_df)
 ]:
     df[col] = df[col].astype(str).str.strip().str.upper()
 
@@ -111,16 +120,16 @@ customer_df["billing_type_score"] = np.where(customer_df["Billing_Type"] == "PPD
 customer_df["customer_category_score"] = customer_df["CUSTOMER_CATEGORY"].map({"RESIDENTIAL": 0.2, "COMMERCIAL": 0.5, "SPECIAL": 0.8}).fillna(0.2)
 
 # Create short names
-feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(get_short_name)
-dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: get_short_name(x, is_dt=True))
+feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(lambda x: get_short_name(x, band_df=band_df))
+dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: get_short_name(x, is_dt=True, band_df=band_df))
 dt_df["Feeder_Short"] = dt_df["New Unique DT Nomenclature"].apply(
-    lambda x: x.split("-")[-2].strip() if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
+    lambda x: get_short_name(x, band_df=band_df) if isinstance(x, str) and "-" in x else x
 )
 dt_df["NAME_OF_DT"] = dt_df["New Unique DT Nomenclature"]
-customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True))
-customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(get_short_name)
+customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True, band_df=band_df))
+customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(lambda x: get_short_name(x, band_df=band_df))
 
-# Map numeric Feeder_Short in dt_df to valid feeder names
+# Map invalid Feeder_Short in dt_df
 valid_feeders_short = set(feeder_df["Feeder_Short"].astype(str).str.strip().str.upper())
 dt_df["Feeder_Short"] = dt_df["Feeder_Short"].apply(
     lambda x: x if x in valid_feeders_short else "UNKNOWN"
@@ -141,6 +150,41 @@ customer_df = customer_df.merge(tariff_df[["Tariff", "Rate (NGN)"]], left_on="TA
 customer_df["Rate (NGN)"] = customer_df["Rate (NGN)"].fillna(209.5)
 customer_df = customer_df.drop(columns=["Tariff"], errors="ignore")
 
+# Streamlit UI: Filters
+st.title("Ikeja Electric Energy Theft Detection Dashboard")
+st.subheader("Filters")
+col1, col2, col3, col4, col5 = st.columns(5)
+with col1:
+    bu_options = sorted(customer_df["BUSINESS_UNIT"].unique())
+    selected_bu = st.selectbox("Select Business Unit", bu_options)
+with col2:
+    customer_df_bu = customer_df[customer_df["BUSINESS_UNIT"] == selected_bu]
+    ut_options = sorted(customer_df_bu["UNDERTAKING"].unique())
+    selected_ut = st.selectbox("Select Undertaking", ut_options)
+with col3:
+    customer_df_ut = customer_df_bu[customer_df_bu["UNDERTAKING"] == selected_ut]
+    feeder_options = sorted(feeder_df["Feeder_Short"].unique())
+    feeder_options_display = [f"{f} (Not in Feeder Data)" if f not in feeder_options else f for f in sorted(set(customer_df_ut["Feeder_Short"].unique()) | set(feeder_options))]
+    selected_feeder_short = st.selectbox("Select Feeder", feeder_options_display)
+with col4:
+    dt_df_filtered = dt_df[dt_df["Feeder_Short"] == selected_feeder_short.replace(" (Not in Feeder Data)", "")]
+    dt_options = sorted(dt_df_filtered["DT_Short_Name"].unique())
+    if not dt_options and selected_feeder_short in feeder_options:
+        st.error(f"No DTs available for feeder {selected_feeder_short}. Check New Unique DT Nomenclature in Transformer Data.")
+        st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
+        st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
+        st.write("dt_df Head:", dt_df.head())
+        st.stop()
+    selected_dt_short = st.selectbox("Select DT", dt_options)
+with col5:
+    month_options = ["All"] + ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
+    selected_month = st.selectbox("Select Month", month_options)
+
+# Filter data by BU and UT
+customer_df = customer_df_ut
+dt_df = dt_df[dt_df["Feeder_Short"].isin(customer_df["Feeder_Short"])]
+feeder_df = feeder_df[feeder_df["Feeder_Short"].isin(customer_df["Feeder_Short"])]
+
 # Debug
 if st.checkbox("Debug: Data"):
     st.write("Valid Feeders (Feeder Data):", sorted(feeder_df["Feeder_Short"].unique()))
@@ -151,6 +195,8 @@ if st.checkbox("Debug: Data"):
     st.write("customer_monthly Columns:", customer_monthly.columns.tolist() if 'customer_monthly' in locals() else "customer_monthly not created yet")
     st.write("dt_agg Columns:", dt_agg.columns.tolist() if 'dt_agg' in locals() else "dt_agg not created yet")
     st.write("dt_merged:", dt_merged.head() if 'dt_merged' in locals() else "dt_merged not created yet")
+    st.write("Filtered Customer Count:", len(customer_df))
+    st.write("Filtered DT Count:", len(dt_df))
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -213,28 +259,6 @@ feeder_merged["feeder_score"] = (1 - feeder_merged["total_billed_kwh"] / feeder_
 feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["feeder_energy_kwh"] - feeder_merged["total_billed_kwh"]
 feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * 209.5
 
-# Streamlit UI
-st.title("Ikeja Electric Energy Theft Detection Dashboard")
-st.subheader("Filters")
-col1, col2, col3 = st.columns(3)
-with col1:
-    feeder_options = sorted(feeder_df["Feeder_Short"].unique())
-    feeder_options_display = [f"{f} (Not in Feeder Data)" if f not in feeder_options else f for f in sorted(set(customer_df["Feeder_Short"].unique()) | set(feeder_options))]
-    selected_feeder_short = st.selectbox("Select Feeder", feeder_options_display)
-with col2:
-    dt_options = dt_df[dt_df["Feeder_Short"] == selected_feeder_short.replace(" (Not in Feeder Data)", "")]["DT_Short_Name"].unique().tolist()
-    dt_options = sorted(dt_options)
-    if not dt_options and selected_feeder_short in feeder_options:
-        st.error(f"No DTs available for feeder {selected_feeder_short}. Check New Unique DT Nomenclature in Transformer Data.")
-        st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
-        st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
-        st.write("dt_df Head:", dt_df.head())
-        st.stop()
-    selected_dt_short = st.selectbox("Select DT", dt_options)
-with col3:
-    month_options = ["All"] + months
-    selected_month = st.selectbox("Select Month", month_options)
-
 # DT Theft Probability Heatmap
 st.subheader("DT Theft Probability Heatmap")
 filtered_dt_agg = dt_agg[dt_agg["Feeder_Short"] == selected_feeder_short.replace(" (Not in Feeder Data)", "")]
@@ -290,6 +314,7 @@ if not pivot_data.empty:
     plt.close()
 else:
     st.warning(f"No customer data for {selected_dt_short}.")
+    st.write("filtered_customers:", filtered_customers.head())
 
 # Customer List
 st.subheader(f"Customers under {selected_dt_short} ({selected_feeder_short}, {selected_month})")
@@ -309,6 +334,7 @@ if not month_customers.empty:
     st.dataframe(styled_df)
 else:
     st.warning(f"No customers for {selected_dt_short} ({selected_month}).")
+    st.write("filtered_customers:", filtered_customers.head())
 
 # CSV Export
 st.subheader("Export Customer Data")
