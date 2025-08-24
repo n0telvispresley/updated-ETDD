@@ -111,15 +111,19 @@ dt_df["Flag"] = (dt_df["Connection Status"] == "Not Connected") & (dt_df["Has En
 dt_df = dt_df[(dt_df["Connection Status"] == "Connected") | dt_df["Flag"]]
 
 # Map DTs to feeders using New Unique DT Nomenclature
-feeder_names = set(feeder_df["Feeder"].str.strip())
+feeder_names = set(feeder_df["Feeder"].str.strip().str.upper())
 def map_dt_to_feeder(dt_name):
-    dt_name_str = str(dt_name).strip()
+    dt_name_str = str(dt_name).strip().upper()
     if not dt_name_str:
         return None
-    # Extract feeder name before the last hyphen
+    # Try splitting at last hyphen
     feeder_part = "-".join(dt_name_str.rsplit("-", 1)[:-1]).strip()
     if feeder_part in feeder_names:
         return feeder_part
+    # Fallback: try startswith with normalization
+    for feeder in feeder_names:
+        if dt_name_str.startswith(feeder):
+            return feeder
     return None
 
 dt_df["Feeder"] = dt_df["New Unique DT Nomenclature"].apply(map_dt_to_feeder)
@@ -127,8 +131,12 @@ dt_df["Feeder"] = dt_df["New Unique DT Nomenclature"].apply(map_dt_to_feeder)
 # Debug: Show unmatched feeders
 if st.checkbox("Debug: Feeder-to-DT mapping"):
     unmatched_dts = dt_df[dt_df["Feeder"].isna()][["New Unique DT Nomenclature", "DT Number"]]
+    unmatched_dts["Extracted Feeder"] = unmatched_dts["New Unique DT Nomenclature"].apply(
+        lambda x: "-".join(str(x).strip().upper().rsplit("-", 1)[:-1]).strip() if str(x).strip() else ""
+    )
     if not unmatched_dts.empty:
-        st.write("Unmatched DTs (no feeder found):", unmatched_dts.to_dict())
+        st.write("Unmatched DTs (no feeder found):", unmatched_dts[["New Unique DT Nomenclature", "DT Number", "Extracted Feeder"]].to_dict())
+        st.write("Available Feeder Names (normalized):", list(feeder_names))
     else:
         st.write("All DTs matched to feeders successfully.")
 
@@ -242,43 +250,68 @@ st.markdown("Detect high-risk buildings and MD-owned DTs using multi-month data 
 st.subheader("Filters")
 col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
+    business_unit_options = ["All"] + sorted(customer_df["BUSINESS_UNIT"].unique())
+    selected_business_unit = st.selectbox("Select Business Unit", business_unit_options)
+with col2:
+    undertaking_options = ["All"] + sorted(customer_df["UNDERTAKING"].unique())
+    selected_undertaking = st.selectbox("Select Undertaking", undertaking_options)
+with col3:
     band_options = ["All"] + sorted(band_df["BAND"].unique())
     selected_band = st.selectbox("Select Band", band_options)
-with col2:
+
+# Apply Business Unit and Undertaking filters first
+filtered_customer_df = customer_df.copy()
+if selected_business_unit != "All":
+    filtered_customer_df = filtered_customer_df[filtered_customer_df["BUSINESS_UNIT"] == selected_business_unit]
+if selected_undertaking != "All":
+    filtered_customer_df = filtered_customer_df[filtered_customer_df["UNDERTAKING"] == selected_undertaking]
+filtered_dt_df = dt_df[dt_df["New Unique DT Nomenclature"].isin(filtered_customer_df["NAME_OF_DT"]) | dt_df["Flag"]]
+
+with col4:
     if selected_band == "All":
-        feeder_options = band_df.sort_values("BAND")["Short Name"].tolist()
+        feeder_options = band_df[band_df["Feeder"].isin(filtered_dt_df["Feeder"])].sort_values("BAND")["Short Name"].tolist()
     else:
-        feeder_options = band_df[band_df["BAND"] == selected_band].sort_values("BAND")["Short Name"].tolist()
+        feeder_options = band_df[(band_df["BAND"] == selected_band) & (band_df["Feeder"].isin(filtered_dt_df["Feeder"]))].sort_values("BAND")["Short Name"].tolist()
     if not feeder_options:
-        st.error("No feeders available for the selected band.")
+        st.error("No feeders available for the selected band, business unit, or undertaking.")
         st.stop()
     selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
     selected_feeder = band_df[band_df["Short Name"] == selected_feeder_short]["Feeder"].iloc[0] if selected_feeder_short else None
-with col3:
-    dt_options = dt_df[dt_df["Feeder"] == selected_feeder]["New Unique DT Nomenclature"].tolist()
+with col5:
+    dt_options = filtered_dt_df[filtered_dt_df["Feeder"] == selected_feeder]["New Unique DT Nomenclature"].tolist()
     if not dt_options:
         st.error(f"No DTs available for feeder {selected_feeder_short}. Check Feeder-to-DT mapping in 'Debug: Feeder-to-DT mapping'.")
         st.stop()
-    dt_options = [f"{dt} (FLAG: Inactive with Energy)" if dt_df[dt_df["New Unique DT Nomenclature"] == dt]["Flag"].iloc[0] else dt for dt in dt_options]
+    dt_options = [f"{dt} (FLAG: Inactive with Energy)" if filtered_dt_df[filtered_dt_df["New Unique DT Nomenclature"] == dt]["Flag"].iloc[0] else dt for dt in dt_options]
     selected_dt = st.selectbox("Select DT", dt_options)
     selected_dt_name = str(selected_dt).replace(" (FLAG: Inactive with Energy)", "") if selected_dt else ""
-with col4:
-    business_unit_options = ["All"] + sorted(customer_df["BUSINESS_UNIT"].unique())
-    selected_business_unit = st.selectbox("Select Business Unit", business_unit_options)
-with col5:
-    undertaking_options = ["All"] + sorted(customer_df["UNDERTAKING"].unique())
-    selected_undertaking = st.selectbox("Select Undertaking", undertaking_options)
 
 # Feeder-Level Summary
 st.subheader("Feeder-Level Loss Summary")
 feeder_summary = feeder_merged[feeder_merged["month"] == "JUN"].merge(band_df[["Feeder", "Short Name", "BAND"]], on="Feeder")
-feeder_summary = feeder_summary.sort_values("BAND")
+feeder_summary = feeder_summary[feeder_summary["Feeder"].isin(filtered_dt_df["Feeder"])].sort_values("BAND")
 if selected_band != "All":
     feeder_summary = feeder_summary[feeder_summary["BAND"] == selected_band]
 st.dataframe(feeder_summary[["Short Name", "feeder_energy_lost_kwh", "feeder_financial_loss_naira"]].style.format({"feeder_energy_lost_kwh": "{:,.2f}", "feeder_financial_loss_naira": "₦{:,.2f}"}))
 
+# DT Heatmap
+st.subheader("DT Theft Probability Heatmap")
+dt_pivot = dt_merged[dt_merged["Feeder"] == selected_feeder].pivot_table(index="New Unique DT Nomenclature", columns="month", values="dt_score", aggfunc="mean")
+if not dt_pivot.empty:
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(dt_pivot, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "DT Theft Score"})
+    plt.xlabel("Month")
+    plt.ylabel("DT Name")
+    plt.title(f"DT Theft Scores for Feeder {selected_feeder_short} (January–June 2025)")
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    st.pyplot(plt.gcf())
+    plt.close()
+else:
+    st.warning(f"No DT data available for feeder {selected_feeder_short}. Check Feeder-to-DT mapping.")
+
 # Heatmap Settings
-st.subheader("Heatmap Settings")
+st.subheader("Customer Heatmap Settings")
 num_customers = st.number_input(
     "Number of high-risk customers to display (0 for all)",
     min_value=0,
@@ -287,7 +320,7 @@ num_customers = st.number_input(
     step=1
 )
 
-# Heatmap
+# Customer Heatmap
 st.subheader("Theft Analysis")
 st.markdown("**Building Theft Probability Heatmap**")
 filtered_customers = customer_monthly[customer_monthly["NAME_OF_DT"] == selected_dt_name]
@@ -309,7 +342,7 @@ if not pivot_data.empty:
     st.pyplot(plt.gcf())
     plt.close()
 else:
-    st.error("No valid data for heatmap. Check ACCOUNT_NUMBER and NAME_OF_DT consistency in 'Debug: Merge inputs for customer_monthly'.")
+    st.error("No valid data for customer heatmap. Check ACCOUNT_NUMBER and NAME_OF_DT consistency in 'Debug: Merge inputs for customer_monthly'.")
 
 # Customer List
 st.subheader(f"Customers under {selected_dt_name} ({selected_feeder_short}, {selected_month})")
