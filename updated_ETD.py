@@ -3,7 +3,6 @@ import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
 import seaborn as sns
-import re
 
 # Set Streamlit page config
 st.set_page_config(page_title="IE Energy Theft Detection Dashboard", layout="wide")
@@ -15,25 +14,13 @@ def preserve_exact_string(value):
     return str(value)
 
 # Function to extract short feeder and DT names
-def get_short_name(name, is_dt=False, band_df=None):
+def get_short_name(name, is_dt=False):
     if isinstance(name, str) and name and "-" in name:
         parts = name.split("-")
         if is_dt:
             return parts[-1].strip()  # DT name is last part
         # Feeder_Short: second-to-last part if >= 3 parts, else last part
-        if len(parts) >= 3:
-            feeder_short = parts[-2].strip()
-        else:
-            feeder_short = parts[-1].strip()
-        # Map to Feeder Band Short Name if available
-        if band_df is not None:
-            try:
-                matching_feeder = band_df[band_df["Feeder"].str.contains(re.escape(feeder_short), case=False, na=False)]
-                if not matching_feeder.empty:
-                    return matching_feeder["Short Name"].iloc[0]
-            except (re.PatternError, TypeError):
-                pass  # Fallback if regex fails
-        return feeder_short
+        return parts[-2].strip() if len(parts) >= 3 else parts[-1].strip()
     return name if isinstance(name, str) else ""
 
 # File uploader
@@ -75,7 +62,7 @@ if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_d
     st.stop()
 
 # Validate column names
-required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING", "TARIFF"]
+required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING", "TARIFF"]
 required_dt_cols = ["New Unique DT Nomenclature"]
 required_feeder_cols = ["Feeder"]
 for df, name, cols in [(ppm_df, "Customer Data_PPM", required_customer_cols), (ppd_df, "Customer Data_PPD", required_customer_cols), (dt_df, "Transformer Data", required_dt_cols), (feeder_df, "Feeder Data", required_feeder_cols)]:
@@ -89,7 +76,7 @@ for df, col in [(ppm_df, "TARIFF"), (ppd_df, "TARIFF"), (band_df, "BAND"), (tari
     if col not in df.columns:
         df[col] = ""
 if "Short Name" not in band_df.columns:
-    band_df["Short Name"] = band_df["Feeder"].apply(lambda x: get_short_name(x, band_df=band_df))
+    band_df["Short Name"] = band_df["Feeder"].apply(lambda x: get_short_name(x))
 
 # Handle Rate column
 rate_col = next((col for col in ["Rate (NGN)", "Rate (₦)", "Rate", "RATE", "Rate(NGN)", "Rate(₦)"] if col in tariff_df.columns), None)
@@ -139,14 +126,14 @@ if customer_df.empty:
     st.write("customer_df size:", len(customer_df))
     st.stop()
 
-# Create short names
-feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(lambda x: get_short_name(x, band_df=band_df))
-dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: get_short_name(x, is_dt=True, band_df=band_df))
+# Create short names and feeder links
+feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(lambda x: get_short_name(x))
+dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: get_short_name(x, is_dt=True))
 dt_df["Feeder"] = dt_df["New Unique DT Nomenclature"].apply(
     lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
 )
 dt_df["NAME_OF_DT"] = dt_df["New Unique DT Nomenclature"]
-customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True, band_df=band_df))
+customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True))
 customer_df["Feeder"] = customer_df["NAME_OF_DT"].apply(
     lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
 )
@@ -195,9 +182,9 @@ with col3:
         st.stop()
     selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
 with col4:
-    dt_df_filtered = dt_df[dt_df["Feeder"].apply(
-        lambda x: any(f in x for f in valid_feeders)
-    )]
+    # Map selected_feeder_short to full Feeder name
+    selected_feeder = feeder_df[feeder_df["Feeder_Short"] == selected_feeder_short]["Feeder"].iloc[0]
+    dt_df_filtered = dt_df[dt_df["Feeder"] == selected_feeder]
     dt_options = sorted(dt_df_filtered["DT_Short_Name"].unique())
     if not dt_options:
         st.error(f"No DTs available for feeder {selected_feeder_short}.")
@@ -263,7 +250,7 @@ for df in [feeder_df, dt_df, ppm_df, ppd_df]:
     df.drop(columns=months, errors="ignore", inplace=True)
 
 # Ensure required columns for melt
-required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "Feeder", "Rate (NGN)", "meter_status_score", "account_type_score", "customer_account_type_score", "billing_type_score", "customer_category_score"]
+required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "Feeder", "Rate (NGN)", "meter_status_score", "account_type_score", "customer_account_type_score", "billing_type_score", "customer_category_score"]
 value_vars = [f"{m} (kWh)" for m in months]
 missing_id_vars = [col for col in required_id_vars if col not in customer_df.columns]
 if missing_id_vars:
@@ -289,6 +276,16 @@ try:
 except Exception as e:
     st.error(f"DT melt failed: {e}")
     st.write("dt_df Columns:", dt_df.columns.tolist())
+    st.stop()
+
+# Apply month filter
+if selected_month != "All":
+    dt_agg = dt_agg[dt_agg["month"] == selected_month]
+    customer_monthly = customer_monthly[customer_monthly["month"] == selected_month]
+if dt_agg.empty or customer_monthly.empty:
+    st.error(f"No data for selected month {selected_month}.")
+    st.write("dt_agg size:", len(dt_agg))
+    st.write("customer_monthly size:", len(customer_monthly))
     st.stop()
 
 # Billed energy
@@ -317,6 +314,8 @@ except Exception as e:
 try:
     feeder_monthly = feeder_df.melt(id_vars=["Feeder", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
     feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
+    if selected_month != "All":
+        feeder_monthly = feeder_monthly[feeder_monthly["month"] == selected_month]
     feeder_agg = customer_monthly.groupby(["Feeder", "month"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
     feeder_merged = feeder_monthly.merge(feeder_agg, on=["Feeder", "month"], how="left")
     feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
@@ -332,7 +331,7 @@ except Exception as e:
 # DT Theft Probability Heatmap
 st.subheader("DT Theft Probability Heatmap")
 try:
-    filtered_dt_agg = dt_agg[dt_agg["Feeder"].apply(lambda x: any(f in x for f in valid_feeders))]
+    filtered_dt_agg = dt_agg[dt_agg["Feeder"] == selected_feeder]
     if filtered_dt_agg.empty:
         st.error(f"No DT data for feeder {selected_feeder_short}.")
         st.write("dt_agg:", dt_agg.head())
@@ -344,7 +343,7 @@ try:
     if not dt_pivot.empty:
         plt.figure(figsize=(10, 8))
         sns.heatmap(dt_pivot, cmap="YlOrRd", cbar_kws={"label": "DT Theft Score"})
-        plt.title(f"DT Theft Score for {selected_feeder_short}")
+        plt.title(f"DT Theft Score for {selected_feeder_short} ({selected_month})")
         st.pyplot(plt.gcf())
         plt.close()
     else:
@@ -390,11 +389,11 @@ try:
     if not pivot_data.empty:
         plt.figure(figsize=(10, 8))
         sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
-        plt.title(f"Theft Probability for {selected_dt_short} ({selected_feeder_short})")
+        plt.title(f"Theft Probability for {selected_dt_short} ({selected_feeder_short}, {selected_month})")
         st.pyplot(plt.gcf())
         plt.close()
     else:
-        st.warning(f"No customer data for {selected_dt_short}.")
+        st.warning(f"No customer data for {selected_dt_short} ({selected_month}).")
         st.write("filtered_customers:", filtered_customers.head())
 except Exception as e:
     st.error(f"Customer heatmap failed: {e}")
@@ -413,7 +412,14 @@ try:
     else:
         month_customers = filtered_customers[filtered_customers["month"] == selected_month]
     if not month_customers.empty:
-        styled_df = month_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "theft_probability", "risk_tier"]].style.format({
+        # Ensure column order with ACCOUNT_NUMBER first
+        display_columns = ["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "theft_probability", "risk_tier"]
+        missing_cols = [col for col in display_columns if col not in month_customers.columns]
+        if missing_cols:
+            st.error(f"Missing columns in month_customers: {missing_cols}")
+            st.write("month_customers Columns:", month_customers.columns.tolist())
+            st.stop()
+        styled_df = month_customers[display_columns].style.format({
             "billed_kwh": "{:.2f}",
             "theft_probability": "{:.3f}"
         }).highlight_max(subset=["theft_probability"], color="lightcoral")
@@ -429,7 +435,7 @@ except Exception as e:
 # CSV Export
 st.subheader("Export Customer Data")
 if not month_customers.empty:
-    csv = month_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "theft_probability", "risk_tier"]].to_csv(index=False)
+    csv = month_customers[display_columns].to_csv(index=False)
     st.download_button(label=f"Download Customer List ({selected_month})", data=csv, file_name=f"theft_analysis_{selected_dt_short}_{selected_feeder_short}_{selected_month}.csv", mime="text/csv")
 
 # Footer
