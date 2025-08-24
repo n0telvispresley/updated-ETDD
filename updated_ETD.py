@@ -36,7 +36,7 @@ try:
         sheet_name=None,
         converters={
             "Feeder Data": {"Feeder": preserve_exact_string},
-            "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "DT Number": preserve_exact_string},
+            "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string},
             "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
             "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
             "Feeder Band": {"BAND": preserve_exact_string, "Feeder": preserve_exact_string, "Short Name": preserve_exact_string},
@@ -104,6 +104,7 @@ if customer_df.empty:
 feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(get_short_name)
 dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: get_short_name(x, is_dt=True))
 dt_df["Feeder_Short"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: x.split("-")[-2].strip() if isinstance(x, str) and "-" in x and len(x.split("-")) >= 2 else x)
+dt_df["NAME_OF_DT"] = dt_df["New Unique DT Nomenclature"]  # Add NAME_OF_DT for consistency
 customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True))
 customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(get_short_name)
 
@@ -126,6 +127,7 @@ if st.checkbox("Debug: Data"):
     st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
     st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
     st.write("customer_df Columns:", customer_df.columns.tolist())
+    st.write("dt_agg Columns:", dt_agg.columns.tolist() if 'dt_agg' in locals() else "dt_agg not created yet")
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -163,7 +165,7 @@ except Exception as e:
     st.stop()
 
 # DT consumption
-dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
+dt_agg = dt_df.melt(id_vars=["NAME_OF_DT", "DT_Short_Name", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
 dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
 
 # Calculate scores
@@ -178,7 +180,7 @@ customer_agg = customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].s
 customer_agg.rename(columns={"billed_kwh": "total_billed_kwh"}, inplace=True)
 
 # DT scores
-dt_merged = dt_agg.merge(customer_agg, left_on=["New Unique DT Nomenclature", "month"], right_on=["NAME_OF_DT", "month"], how="left")
+dt_merged = dt_agg.merge(customer_agg, on=["NAME_OF_DT", "month"], how="left")
 dt_merged["total_billed_kwh"] = dt_merged["total_billed_kwh"].fillna(0)
 dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0, 1)).clip(0, 1)
 dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_billed_kwh"]
@@ -209,6 +211,7 @@ with col2:
         st.error(f"No DTs available for feeder {selected_feeder_short}. Check New Unique DT Nomenclature in Transformer Data.")
         st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
         st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
+        st.write("filtered_dt_agg:", filtered_dt_agg)
         st.stop()
     selected_dt_short = st.selectbox("Select DT", dt_options)
 with col3:
@@ -220,7 +223,10 @@ st.subheader("DT Theft Probability Heatmap")
 filtered_dt_agg = dt_agg[dt_agg["Feeder_Short"] == selected_feeder_short.replace(" (Not in Feeder Data)", "")]
 if filtered_dt_agg.empty:
     st.error(f"No DT data for feeder {selected_feeder_short}.")
+    st.write("dt_agg Columns:", dt_agg.columns.tolist())
     st.stop()
+filtered_dt_agg = filtered_dt_agg.merge(dt_merged[["NAME_OF_DT", "month", "dt_score"]], on=["NAME_OF_DT", "month"], how="left")
+filtered_dt_agg["dt_score"] = filtered_dt_agg["dt_score"].fillna(0)
 dt_pivot = filtered_dt_agg.pivot_table(index="DT_Short_Name", columns="month", values="dt_score", aggfunc="mean")
 if not dt_pivot.empty:
     plt.figure(figsize=(10, 8))
@@ -228,10 +234,14 @@ if not dt_pivot.empty:
     plt.title(f"DT Theft Score for {selected_feeder_short}")
     st.pyplot(plt.gcf())
     plt.close()
+else:
+    st.error(f"No DT data for {selected_feeder_short} after pivoting.")
+    st.write("filtered_dt_agg:", filtered_dt_agg)
+    st.stop()
 
 # Customer scores
 customer_monthly = customer_monthly.merge(feeder_merged[["Feeder_Short", "month", "feeder_score"]], on=["Feeder_Short", "month"], how="left")
-customer_monthly = customer_monthly.merge(dt_merged[["New Unique DT Nomenclature", "month", "dt_score"]], left_on=["NAME_OF_DT", "month"], right_on=["New Unique DT Nomenclature", "month"], how="left")
+customer_monthly = customer_monthly.merge(dt_merged[["NAME_OF_DT", "month", "dt_score"]], on=["NAME_OF_DT", "month"], how="left")
 customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
 customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
 customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
