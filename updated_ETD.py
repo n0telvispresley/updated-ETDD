@@ -302,6 +302,10 @@ if st.checkbox("Debug: Data"):
     st.write("Filtered DT Count:", len(dt_df))
     st.write("Filtered Feeder Count:", len(feeder_df))
     st.write("Selected Months:", selected_months if 'selected_months' in locals() else "Not set yet")
+    st.write("Feeder Energy Sample (kWh):", feeder_df[[f"{m} (kWh)" for m in months]].head())
+    st.write("DT Energy Sample (kWh):", dt_df[[f"{m} (kWh)" for m in months]].head())
+    st.write("PPM Energy Sample (kWh):", ppm_df[[f"{m} (kWh)" for m in months]].head())
+    st.write("PPD Energy Sample (kWh):", ppd_df[[f"{m} (kWh)" for m in months]].head())
 
 # Error Report Download
 if not error_report_df.empty:
@@ -325,7 +329,7 @@ for month in months:
         else:
             df[col] = 0
     if month in dt_df.columns:
-        dt_df[f"{month} (kWh)"] = pd.to_numeric(dt_df[month], errors="coerce").fillna(0) / 1000
+        dt_df[f"{month} (kWh)"] = pd.to_numeric(dt_df[month], errors="coerce").fillna(0)  # Already in kWh
     else:
         dt_df[f"{month} (kWh)"] = 0
 for df in [feeder_df, dt_df, ppm_df, ppd_df]:
