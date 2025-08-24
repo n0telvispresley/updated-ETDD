@@ -37,7 +37,7 @@ try:
             "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
             "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
             "Feeder Band": {"BAND": preserve_exact_string, "Feeder": preserve_exact_string, "Short Name": preserve_exact_string},
-            "Customer Tariffs": {"Tariff": preserve_exact_string, "Rate (₦)": preserve_exact_string}
+            "Customer Tariffs": {"Tariff": preserve_exact_string}
         }
     )
 except Exception as e:
@@ -79,12 +79,22 @@ if "Short Name" not in band_df.columns:
 if "Tariff" not in tariff_df.columns:
     st.error(f"Column 'Tariff' not found in Customer Tariffs. Available columns: {tariff_df.columns.tolist()}")
     tariff_df["Tariff"] = ""
-if "Rate (₦)" not in tariff_df.columns:
-    st.warning(f"Column 'Rate (₦)' not found in Customer Tariffs. Available columns: {tariff_df.columns.tolist()}. Renaming 'Rate' if present or creating with default 209.5.")
-    if "Rate" in tariff_df.columns:
-        tariff_df["Rate (₦)"] = tariff_df["Rate"]
-    else:
-        tariff_df["Rate (₦)"] = 209.5
+
+# Handle Rate column variants in tariff_df
+rate_variants = ["Rate (NGN)", "Rate (₦)", "Rate", "RATE", "Rate(NGN)", "Rate(₦)"]
+rate_col = None
+for variant in rate_variants:
+    if variant in tariff_df.columns:
+        rate_col = variant
+        break
+if rate_col:
+    tariff_df["Rate (NGN)"] = pd.to_numeric(tariff_df[rate_col], errors="coerce").fillna(209.5)
+    if rate_col != "Rate (NGN)":
+        st.warning(f"Found '{rate_col}' in Customer Tariffs. Renaming to 'Rate (NGN)'.")
+        tariff_df = tariff_df.drop(columns=[rate_col], errors="ignore")
+else:
+    st.warning(f"No rate column found in Customer Tariffs. Available columns: {tariff_df.columns.tolist()}. Creating 'Rate (NGN)' with default 209.5.")
+    tariff_df["Rate (NGN)"] = 209.5
 
 # Normalize feeder, DT, and tariff names
 feeder_df["Feeder"] = feeder_df["Feeder"].str.strip().str.upper()
@@ -115,17 +125,17 @@ customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(get_dt_short_name
 dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(get_dt_short_name)
 
 # Merge with tariffs
-tariff_merge = customer_df.merge(tariff_df[["Tariff", "Rate (₦)"]], left_on="TARIFF", right_on="Tariff", how="left")
-customer_df["Rate (₦)"] = tariff_merge["Rate (₦)"].fillna(209.5)
+tariff_merge = customer_df.merge(tariff_df[["Tariff", "Rate (NGN)"]], left_on="TARIFF", right_on="Tariff", how="left")
+customer_df["Rate (NGN)"] = tariff_merge["Rate (NGN)"].fillna(209.5)
 customer_df = customer_df.drop(columns=["Tariff"], errors="ignore")
 
 # Debug: Check tariff merge
 if st.checkbox("Debug: Tariff merge"):
     st.write("customer_df TARIFF unique values:", sorted(customer_df["TARIFF"].dropna().astype(str).unique()))
     st.write("tariff_df Tariff unique values:", sorted(tariff_df["Tariff"].dropna().astype(str).unique()))
-    st.write("Rows in customer_df with Rate (₦) after merge:", len(customer_df[customer_df["Rate (₦)"].notna()]))
-    st.write("Rows in customer_df with null Rate (₦):", len(customer_df[customer_df["Rate (₦)"].isna()]))
-    st.write("Sample Rate (₦) values:", customer_df["Rate (₦)"].head().tolist())
+    st.write("Rows in customer_df with Rate (NGN) after merge:", len(customer_df[customer_df["Rate (NGN)"].notna()]))
+    st.write("Rows in customer_df with null Rate (NGN):", len(customer_df[customer_df["Rate (NGN)"].isna()]))
+    st.write("Sample Rate (NGN) values:", customer_df["Rate (NGN)"].head().tolist())
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -176,14 +186,14 @@ if st.checkbox("Debug: Customer Data before melt"):
     st.write("Sample NAME_OF_DT values:", customer_df["NAME_OF_DT"].head().tolist())
     st.write("Sample DT_Short_Name values:", customer_df["DT_Short_Name"].head().tolist())
     st.write("Sample NAME_OF_FEEDER values:", customer_df["NAME_OF_FEEDER"].head().tolist())
-    st.write("Sample Rate (₦) values:", customer_df["Rate (₦)"].head().tolist())
+    st.write("Sample Rate (NGN) values:", customer_df["Rate (NGN)"].head().tolist())
     st.write("Month columns present:", [col for col in customer_df.columns if col.endswith(" (kWh)")])
     st.write("tariff_df columns:", tariff_df.columns.tolist())
     st.write("Sample tariff_df Tariff values:", tariff_df["Tariff"].head().tolist())
-    st.write("Sample tariff_df Rate (₦) values:", tariff_df["Rate (₦)"].head().tolist())
+    st.write("Sample tariff_df Rate (NGN) values:", tariff_df["Rate (NGN)"].head().tolist())
 
 # Validate columns for melt
-required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "Rate (₦)", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING"]
+required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "Rate (NGN)", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING"]
 value_vars = [m + " (kWh)" for m in months]
 missing_id_vars = [col for col in required_id_vars if col not in customer_df.columns]
 missing_value_vars = [col for col in value_vars if col not in customer_df.columns]
@@ -215,7 +225,7 @@ dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT Number", "Flag", 
 dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
 
 # Calculate total billed energy per DT per month
-customer_monthly = customer_df.melt(id_vars=["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "Rate (₦)", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="billed_kwh")
+customer_monthly = customer_df.melt(id_vars=["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "Rate (NGN)", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="billed_kwh")
 customer_monthly["month"] = customer_monthly["month"].str.replace(" (kWh)", "")
 customer_agg = customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].sum().reset_index()
 customer_agg.rename(columns={"billed_kwh": "total_billed_kwh"}, inplace=True)
@@ -267,7 +277,7 @@ md_customers["ACCOUNT_TYPE"] = "Postpaid"
 md_customers["CUSTOMER_ACCOUNT_TYPE"] = "MD"
 md_customers["Billing_Type"] = "PPD"
 md_customers["CUSTOMER_CATEGORY"] = "Special"
-md_customers["Rate (₦)"] = 209.5
+md_customers["Rate (NGN)"] = 209.5
 md_customers["NAME_OF_FEEDER"] = "Unknown"  # Will be filtered out unless matched
 md_customers["BUSINESS_UNIT"] = "MD"
 md_customers["UNDERTAKING"] = "MD"
