@@ -121,17 +121,26 @@ dt_df["Feeder_Short"] = dt_df["New Unique DT Nomenclature"].apply(get_short_name
 customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(get_short_name)
 customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(get_short_name)
 
+# Filter customer_df for valid feeders
+valid_feeders = set(feeder_df["Feeder"].astype(str).str.strip().str.upper())
+missing_feeders = set(customer_df["NAME_OF_FEEDER"].unique()) - valid_feeders
+if missing_feeders:
+    st.warning(f"Feeders not in Feeder Data: {', '.join(sorted(missing_feeders))}. These customers are excluded.")
+customer_df = customer_df[customer_df["NAME_OF_FEEDER"].isin(valid_feeders)]
+
 # Map customers to DTs
 customer_df = customer_df.merge(
     dt_df[["DT Number", "New Unique DT Nomenclature", "Feeder_Short", "DT_Short_Name", "UNDERTAKING"]],
     left_on="DT_NO",
     right_on="DT Number",
-    how="left"
+    how="left",
+    suffixes=("", "_dt")
 )
+customer_df["Feeder_Short"] = customer_df["Feeder_Short_dt"].combine_first(customer_df["Feeder_Short"]).fillna(customer_df["NAME_OF_FEEDER"].apply(get_short_name))
+customer_df["NAME_OF_FEEDER"] = customer_df["Feeder_Short"]
 customer_df["NAME_OF_DT"] = customer_df["New Unique DT Nomenclature"].combine_first(customer_df["NAME_OF_DT"])
-customer_df["NAME_OF_FEEDER"] = customer_df["Feeder_Short"].combine_first(customer_df["Feeder_Short"])
-customer_df["UNDERTAKING"] = customer_df["UNDERTAKING_y"].combine_first(customer_df["UNDERTAKING_x"]).fillna("PTC")
-customer_df = customer_df.drop(columns=["DT Number", "New Unique DT Nomenclature", "Feeder_Short", "DT_Short_Name", "UNDERTAKING_x", "UNDERTAKING_y"], errors="ignore")
+customer_df["UNDERTAKING"] = customer_df["UNDERTAKING_dt"].combine_first(customer_df["UNDERTAKING"]).fillna("PTC")
+customer_df = customer_df.drop(columns=["DT Number", "New Unique DT Nomenclature", "Feeder_Short_dt", "DT_Short_Name", "UNDERTAKING_dt"], errors="ignore")
 
 # Merge tariffs
 customer_df = customer_df.merge(tariff_df[["Tariff", "Rate (NGN)"]], left_on="TARIFF", right_on="Tariff", how="left")
@@ -140,15 +149,14 @@ customer_df = customer_df.drop(columns=["Tariff"], errors="ignore")
 
 # Debug
 if st.checkbox("Debug: Data"):
-    st.write("customer_df TARIFF:", sorted(customer_df["TARIFF"].dropna().astype(str).unique()))
-    st.write("tariff_df Tariff:", sorted(tariff_df["Tariff"].dropna().astype(str).unique()))
-    st.write("customer_df DT_NO:", customer_df["DT_NO"].head().tolist())
-    st.write("customer_df NAME_OF_DT:", customer_df["NAME_OF_DT"].head().tolist())
-    st.write("customer_df Feeder_Short:", customer_df["Feeder_Short"].head().tolist())
-    st.write("customer_df UNDERTAKING:", customer_df["UNDERTAKING"].head().tolist())
-    st.write("dt_df DT Number:", sorted(dt_df["DT Number"].dropna().astype(str).unique()))
-    st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].dropna().astype(str).unique()))
+    st.write("Valid Feeders (Feeder Data):", sorted(feeder_df["Feeder_Short"].dropna().astype(str).unique()))
+    st.write("Missing Feeders (Customer Data):", sorted(missing_feeders))
+    st.write("customer_df Feeder_Short:", sorted(customer_df["Feeder_Short"].dropna().astype(str).unique()))
+    st.write("customer_df DT_Short_Name:", sorted(customer_df["DT_Short_Name"].dropna().astype(str).unique()))
     st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].dropna().astype(str).unique()))
+    st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].dropna().astype(str).unique()))
+    st.write("dt_df DT Number:", sorted(dt_df["DT Number"].dropna().astype(str).unique()))
+    st.write("customer_df DT_NO:", sorted(customer_df["DT_NO"].dropna().astype(str).unique()))
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -168,6 +176,7 @@ for df in [feeder_df, dt_df, ppm_df, ppd_df]:
 
 # Recombine customer_df
 customer_df = pd.concat([ppm_df, ppd_df], ignore_index=True)
+customer_df = customer_df[customer_df["NAME_OF_FEEDER"].isin(valid_feeders)]
 customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(get_short_name)
 customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(get_short_name)
 
@@ -278,17 +287,20 @@ with col3:
     selected_band = st.selectbox("Select Band", band_options)
 with col4:
     feeder_options = sorted(feeder_df["Feeder_Short"].dropna().astype(str).unique())
-    selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
-    feeder_full = feeder_df[feeder_df["Feeder_Short"] == selected_feeder_short]["Feeder"].iloc[0] if not feeder_df[feeder_df["Feeder_Short"] == selected_feeder_short].empty else selected_feeder_short
+    feeder_full_map = {row["Feeder_Short"]: row["Feeder"] for _, row in feeder_df.iterrows()}
+    feeder_options_display = [f"{f} (Not in Feeder Data)" if f not in feeder_options else f for f in sorted(set(customer_df["Feeder_Short"].unique()) | set(feeder_options))]
+    selected_feeder_short = st.selectbox("Select Feeder", feeder_options_display)
+    selected_feeder_full = feeder_full_map.get(selected_feeder_short.replace(" (Not in Feeder Data)", ""), selected_feeder_short)
 with col5:
-    dt_options = dt_df[dt_df["Feeder_Short"] == selected_feeder_short]["DT_Short_Name"].dropna().astype(str).unique().tolist()
+    dt_options = dt_df[dt_df["Feeder_Short"] == selected_feeder_short.replace(" (Not in Feeder Data)", "")]["DT_Short_Name"].dropna().astype(str).unique().tolist()
     dt_options = sorted(dt_options)
-    if not dt_options:
+    if not dt_options and selected_feeder_short in feeder_options:
         st.error(f"No DTs available for feeder {selected_feeder_short}. Check Feeder and New Unique DT Nomenclature in Transformer Data.")
         st.write("Available Feeder_Short values:", sorted(dt_df["Feeder_Short"].dropna().astype(str).unique()))
+        st.write("Available DT_Short_Name values:", sorted(dt_df["DT_Short_Name"].dropna().astype(str).unique()))
         st.stop()
-    dt_short_to_full = {dt: dt_df[dt_df["DT_Short_Name"] == dt]["New Unique DT Nomenclature"].iloc[0] for dt in dt_options}
-    dt_options_display = [f"{dt} (Inactive with Energy)" if dt_short_to_full[dt] in dt_df[dt_df["Flag"]]["New Unique DT Nomenclature"].tolist() else dt for dt in dt_options]
+    dt_short_to_full = {dt: dt_df[dt_df["DT_Short_Name"] == dt]["New Unique DT Nomenclature"].iloc[0] for dt in dt_options if dt in dt_df["DT_Short_Name"].values}
+    dt_options_display = [f"{dt} (Inactive with Energy)" if dt_short_to_full.get(dt) in dt_df[dt_df["Flag"]]["New Unique DT Nomenclature"].tolist() else dt for dt in dt_options]
     selected_dt_short = st.selectbox("Select DT", dt_options_display)
     selected_dt_name = dt_short_to_full.get(selected_dt_short.replace(" (Inactive with Energy)", ""), "")
 with col6:
@@ -301,11 +313,11 @@ if selected_business_unit != "All":
     filtered_customer_df = filtered_customer_df[filtered_customer_df["BUSINESS_UNIT"] == selected_business_unit]
 if selected_undertaking != "All":
     filtered_customer_df = filtered_customer_df[filtered_customer_df["UNDERTAKING"] == selected_undertaking]
-filtered_dt_df = dt_df[dt_df["Feeder_Short"] == selected_feeder_short]
+filtered_dt_df = dt_df[dt_df["Feeder_Short"] == selected_feeder_short.replace(" (Not in Feeder Data)", "")]
 
 # DT Theft Probability Heatmap
 st.subheader("DT Theft Probability Heatmap")
-filtered_dt_agg = dt_agg[dt_agg["Feeder_Short"] == selected_feeder_short]
+filtered_dt_agg = dt_agg[dt_agg["Feeder_Short"] == selected_feeder_short.replace(" (Not in Feeder Data)", "")]
 if filtered_dt_agg.empty:
     st.error(f"No DT data for feeder {selected_feeder_short}. Check Transformer Data.")
     st.stop()
