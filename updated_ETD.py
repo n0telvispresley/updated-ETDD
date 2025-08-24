@@ -65,12 +65,17 @@ if "BAND" not in band_df.columns:
 if "Feeder" not in band_df.columns:
     st.error(f"Column 'Feeder' not found in Feeder Band. Available columns: {band_df.columns.tolist()}")
     st.stop()
+if "Short Name" not in band_df.columns:
+    st.error(f"Column 'Short Name' not found in Feeder Band. Available columns: {band_df.columns.tolist()}")
+    st.stop()
 
 # Normalize feeder names for consistent matching
 feeder_df["Feeder"] = feeder_df["Feeder"].str.strip().str.upper()
 ppm_df["NAME_OF_FEEDER"] = ppm_df["NAME_OF_FEEDER"].str.strip().str.upper()
 ppd_df["NAME_OF_FEEDER"] = ppd_df["NAME_OF_FEEDER"].str.strip().str.upper()
 band_df["Feeder"] = band_df["Feeder"].str.strip().str.upper()
+ppm_df["NAME_OF_DT"] = ppm_df["NAME_OF_DT"].str.strip().str.upper()
+ppd_df["NAME_OF_DT"] = ppd_df["NAME_OF_DT"].str.strip().str.upper()
 
 # Combine PPM and PPD into customer_df
 ppm_df["Billing_Type"] = "PPM"
@@ -195,6 +200,61 @@ if st.checkbox("Debug: Merge inputs for customer_monthly"):
     st.write("dt_merged month unique values:", dt_merged["month"].unique().tolist())
     st.write("feeder_merged BAND values:", feeder_merged["BAND"].dropna().unique().tolist())
 
+# Handle MD-owned DTs
+dt_no_customers = dt_merged[~dt_merged["New Unique DT Nomenclature"].isin(customer_df["NAME_OF_DT"])]
+md_customers = dt_no_customers[["New Unique DT Nomenclature", "DT Number", "month", "dt_score", "Flag"]].copy()
+md_customers["ACCOUNT_NUMBER"] = md_customers["DT Number"]
+md_customers["METER_NUMBER"] = md_customers["DT Number"]
+md_customers["CUSTOMER_NAME"] = md_customers["New Unique DT Nomenclature"]
+md_customers["ADDRESS"] = "MD-Owned DT"
+md_customers["billed_kwh"] = 0
+md_customers["METER_STATUS"] = "Not Metered"
+md_customers["ACCOUNT_TYPE"] = "Postpaid"
+md_customers["CUSTOMER_ACCOUNT_TYPE"] = "MD"
+md_customers["Billing_Type"] = "PPD"
+md_customers["CUSTOMER_CATEGORY"] = "Special"
+md_customers["Rate (₦)"] = 209.5
+md_customers["NAME_OF_FEEDER"] = "Unknown"  # Will be filtered out unless matched
+md_customers["BUSINESS_UNIT"] = "MD"
+md_customers["UNDERTAKING"] = "MD"
+md_customers["theft_probability"] = md_customers["dt_score"]
+md_customers["meter_status_score"] = 0.9
+md_customers["account_type_score"] = 0.8
+md_customers["customer_account_type_score"] = 0.8
+md_customers["billing_type_score"] = 0.5
+md_customers["customer_category_score"] = 0.8
+md_customers["energy_billed_score"] = 0.0
+
+# Append MD-owned DTs
+customer_monthly = pd.concat([customer_monthly, md_customers], ignore_index=True)
+
+# Calculate customer scores
+customer_monthly = customer_monthly.merge(feeder_merged[["Feeder", "month", "feeder_score"]], left_on=["NAME_OF_FEEDER", "month"], right_on=["Feeder", "month"], how="left")
+customer_monthly = customer_monthly.merge(dt_merged[["New Unique DT Nomenclature", "month", "dt_score"]], left_on=["NAME_OF_DT", "month"], right_on=["New Unique DT Nomenclature", "month"], how="left")
+if "dt_score" not in customer_monthly.columns:
+    customer_monthly["dt_score"] = 0
+customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
+customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
+customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
+customer_monthly["theft_probability"] = (
+    0.15 * customer_monthly["feeder_score"] +
+    0.25 * customer_monthly["dt_score"] +
+    0.15 * customer_monthly["meter_status_score"] +
+    0.15 * customer_monthly["account_type_score"] +
+    0.15 * customer_monthly["customer_account_type_score"] +
+    0.15 * customer_monthly["billing_type_score"] +
+    0.10 * customer_monthly["customer_category_score"] +
+    0.15 * customer_monthly["energy_billed_score"]
+).clip(0, 1)
+
+# Add risk tiers
+customer_monthly["risk_tier"] = pd.cut(
+    customer_monthly["theft_probability"],
+    bins=[0, 0.4, 0.7, 1.0],
+    labels=["Low", "Medium", "High"],
+    include_lowest=True
+)
+
 # Streamlit UI
 st.title("Ikeja Electric Energy Theft Detection Dashboard")
 st.markdown("Detect high-risk buildings and MD-owned DTs using multi-month data (January–June 2025).")
@@ -211,14 +271,49 @@ with col2:
 with col3:
     band_options = ["All"] + sorted(band_df["BAND"].dropna().astype(str).unique())
     selected_band = st.selectbox("Select Band", band_options)
+
+# Apply Business Unit and Undertaking filters first
+filtered_customer_df = customer_df.copy()
+if selected_business_unit != "All":
+    filtered_customer_df = filtered_customer_df[filtered_customer_df["BUSINESS_UNIT"] == selected_business_unit]
+if selected_undertaking != "All":
+    filtered_customer_df = filtered_customer_df[filtered_customer_df["UNDERTAKING"] == selected_undertaking]
+if filtered_customer_df.empty:
+    st.error("No data available after applying Business Unit and Undertaking filters.")
+    st.write("Selected Business Unit:", selected_business_unit)
+    st.write("Selected Undertaking:", selected_undertaking)
+    st.write("Available BUSINESS_UNIT values:", sorted(customer_df["BUSINESS_UNIT"].dropna().astype(str).unique()))
+    st.write("Available UNDERTAKING values:", sorted(customer_df["UNDERTAKING"].dropna().astype(str).unique()))
+    st.stop()
+if "NAME_OF_FEEDER" not in filtered_customer_df.columns:
+    st.error("NAME_OF_FEEDER column missing in filtered_customer_df.")
+    st.write("filtered_customer_df columns:", filtered_customer_df.columns.tolist())
+    st.stop()
+
+# Debug: Check filtered_customer_df
+if st.checkbox("Debug: Filtered customer data"):
+    st.write("filtered_customer_df rows:", len(filtered_customer_df))
+    st.write("filtered_customer_df columns:", filtered_customer_df.columns.tolist())
+    st.write("Sample NAME_OF_FEEDER values:", filtered_customer_df["NAME_OF_FEEDER"].head().tolist())
+    st.write("Unique NAME_OF_FEEDER values:", sorted(filtered_customer_df["NAME_OF_FEEDER"].dropna().astype(str).unique()))
+
+filtered_dt_df = dt_df[dt_df["New Unique DT Nomenclature"].isin(filtered_customer_df["NAME_OF_DT"]) | dt_df["Flag"]]
+
 with col4:
     if selected_band == "All":
-        feeder_options = band_df[band_df["Feeder"].isin(filtered_customer_df["NAME_OF_FEEDER"])].sort_values("BAND")["Short Name"].dropna().astype(str).tolist()
+        feeder_options = band_df[band_df["Feeder"].isin(filtered_customer_df["NAME_OF_FEEDER"])]["Short Name"].dropna().astype(str).tolist()
+        if not feeder_options:  # Fallback if no matches
+            feeder_options = band_df["Short Name"].dropna().astype(str).tolist()
+            st.warning("No feeders match NAME_OF_FEEDER. Showing all feeders from Feeder Band.")
     else:
-        feeder_options = band_df[(band_df["BAND"] == selected_band) & (band_df["Feeder"].isin(filtered_customer_df["NAME_OF_FEEDER"]))].sort_values("BAND")["Short Name"].dropna().astype(str).tolist()
+        feeder_options = band_df[(band_df["BAND"] == selected_band) & (band_df["Feeder"].isin(filtered_customer_df["NAME_OF_FEEDER"]))]["Short Name"].dropna().astype(str).tolist()
+        if not feeder_options:  # Fallback if no matches
+            feeder_options = band_df[band_df["BAND"] == selected_band]["Short Name"].dropna().astype(str).tolist()
+            st.warning(f"No feeders match NAME_OF_FEEDER for band {selected_band}. Showing all feeders for this band.")
     if not feeder_options:
         st.error("No feeders available for the selected band, business unit, or undertaking.")
         st.stop()
+    feeder_options = sorted(feeder_options)
     selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
     selected_feeder = band_df[band_df["Short Name"] == selected_feeder_short]["Feeder"].iloc[0] if selected_feeder_short else None
 with col5:
