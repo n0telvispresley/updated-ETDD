@@ -13,24 +13,6 @@ def preserve_exact_string(value):
         return ""  # Convert NaN/Null/None to empty string
     return str(value)  # Preserve exact string, including apostrophes
 
-# Function to extract DT short name (part after last hyphen)
-def get_dt_short_name(dt_name):
-    if isinstance(dt_name, str) and dt_name and "-" in dt_name:
-        return dt_name.split("-")[-1].strip()
-    return dt_name if isinstance(dt_name, str) else ""
-
-# Function to map feeder names
-def map_feeder_name(feeder_name):
-    if isinstance(feeder_name, str):
-        feeder_name = feeder_name.strip().upper()
-        # Map known feeder name variations
-        feeder_mapping = {
-            "11-OPEBIINJ-T1-AGBAOKU": "AGBAOKU",
-            # Add other mappings as needed
-        }
-        return feeder_mapping.get(feeder_name, feeder_name)
-    return ""
-
 # File uploader
 st.subheader("Upload Excel File")
 uploaded_file = st.file_uploader("Choose an Excel file (.xlsx)", type=["xlsx"])
@@ -46,8 +28,8 @@ try:
         converters={
             "Feeder Data": {"Feeder": preserve_exact_string, "Feeder No": preserve_exact_string},
             "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "DT Number": preserve_exact_string, "Ownership": preserve_exact_string, "Connection Status": preserve_exact_string},
-            "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
-            "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
+            "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string, "DT_NO": preserve_exact_string, "FEEDER_NO": preserve_exact_string},
+            "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string, "DT_NO": preserve_exact_string, "FEEDER_NO": preserve_exact_string},
             "Feeder Band": {"BAND": preserve_exact_string, "Feeder": preserve_exact_string, "Short Name": preserve_exact_string},
             "Customer Tariffs": {"Tariff": preserve_exact_string}
         }
@@ -70,7 +52,7 @@ if feeder_df is None or dt_df is None or ppm_df is None or ppd_df is None or ban
     st.stop()
 
 # Validate column names
-required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING"]
+required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING", "DT_NO", "FEEDER_NO"]
 for df, name in [(ppm_df, "Customer Data_PPM"), (ppd_df, "Customer Data_PPD")]:
     missing_cols = [col for col in required_customer_cols if col not in df.columns]
     if missing_cols:
@@ -81,7 +63,7 @@ for df, name in [(ppm_df, "Customer Data_PPM"), (ppd_df, "Customer Data_PPD")]:
         df["TARIFF"] = ""
 if "BAND" not in band_df.columns:
     st.error(f"Column 'BAND' not found in Feeder Band. Available columns: {band_df.columns.tolist()}")
-    st.stop()
+    band_df["BAND"] = ""  # Fallback: empty BAND column
 if "Feeder" not in band_df.columns:
     st.error(f"Column 'Feeder' not found in Feeder Band. Available columns: {band_df.columns.tolist()}")
     st.stop()
@@ -90,7 +72,7 @@ if "Short Name" not in band_df.columns:
     st.stop()
 if "Tariff" not in tariff_df.columns:
     st.error(f"Column 'Tariff' not found in Customer Tariffs. Available columns: {tariff_df.columns.tolist()}")
-    st.stop()
+    tariff_df["Tariff"] = ""
 
 # Handle Rate column variants in tariff_df
 rate_variants = ["Rate (NGN)", "Rate (₦)", "Rate", "RATE", "Rate(NGN)", "Rate(₦)"]
@@ -105,13 +87,13 @@ if rate_col:
         st.warning(f"Found '{rate_col}' in Customer Tariffs. Renaming to 'Rate (NGN)'.")
         tariff_df = tariff_df.drop(columns=[rate_col], errors="ignore")
 else:
-    st.error(f"No rate column found in Customer Tariffs. Available columns: {tariff_df.columns.tolist()}. Required for theft detection.")
-    st.stop()
+    st.warning(f"No rate column found in Customer Tariffs. Available columns: {tariff_df.columns.tolist()}. Creating 'Rate (NGN)' with default 209.5.")
+    tariff_df["Rate (NGN)"] = 209.5
 
 # Normalize feeder, DT, and tariff names
 feeder_df["Feeder"] = feeder_df["Feeder"].str.strip().str.upper()
-ppm_df["NAME_OF_FEEDER"] = ppm_df["NAME_OF_FEEDER"].apply(map_feeder_name)
-ppd_df["NAME_OF_FEEDER"] = ppd_df["NAME_OF_FEEDER"].apply(map_feeder_name)
+ppm_df["NAME_OF_FEEDER"] = ppm_df["NAME_OF_FEEDER"].str.strip().str.upper()
+ppd_df["NAME_OF_FEEDER"] = ppd_df["NAME_OF_FEEDER"].str.strip().str.upper()
 band_df["Feeder"] = band_df["Feeder"].str.strip().str.upper()
 ppm_df["NAME_OF_DT"] = ppm_df["NAME_OF_DT"].str.strip().str.upper()
 ppd_df["NAME_OF_DT"] = ppd_df["NAME_OF_DT"].str.strip().str.upper()
@@ -119,6 +101,12 @@ dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].str.st
 ppm_df["TARIFF"] = ppm_df["TARIFF"].str.strip().str.upper()
 ppd_df["TARIFF"] = ppd_df["TARIFF"].str.strip().str.upper()
 tariff_df["Tariff"] = tariff_df["Tariff"].str.strip().str.upper()
+ppm_df["DT_NO"] = ppm_df["DT_NO"].str.strip().str.upper()
+ppd_df["DT_NO"] = ppd_df["DT_NO"].str.strip().str.upper()
+dt_df["DT Number"] = dt_df["DT Number"].str.strip().str.upper()
+ppm_df["FEEDER_NO"] = ppm_df["FEEDER_NO"].str.strip().str.upper()
+ppd_df["FEEDER_NO"] = ppd_df["FEEDER_NO"].str.strip().str.upper()
+feeder_df["Feeder No"] = feeder_df["Feeder No"].str.strip().str.upper()
 
 # Combine PPM and PPD into customer_df
 ppm_df["Billing_Type"] = "PPM"
@@ -320,7 +308,7 @@ with col5:
     dt_options += [dt for dt in dt_df[dt_df["Flag"]]["DT_Short_Name"].dropna().astype(str).tolist() if dt not in dt_options]
     dt_options = sorted(dt_options)
     if not dt_options:
-        st.error(f"No DTs available for feeder {selected_feeder_short}. Check NAME_OF_FEEDER and NAME_OF_DT in Customer Data.")
+        st.error(f"No DTs available for feeder {selected_feeder_short}. Check NAME_OF_FEEDER in Customer Data.")
         st.stop()
     dt_short_to_full = {get_dt_short_name(dt): dt for dt in customer_df[customer_df["NAME_OF_FEEDER"] == selected_feeder]["NAME_OF_DT"].dropna().astype(str).unique()}
     dt_short_to_full.update({get_dt_short_name(dt): dt for dt in dt_df[dt_df["Flag"]]["New Unique DT Nomenclature"].dropna().astype(str)})
