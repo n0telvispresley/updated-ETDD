@@ -19,6 +19,18 @@ def get_dt_short_name(dt_name):
         return dt_name.split("-")[-1].strip()
     return dt_name if isinstance(dt_name, str) else ""
 
+# Function to map feeder names
+def map_feeder_name(feeder_name):
+    if isinstance(feeder_name, str):
+        feeder_name = feeder_name.strip().upper()
+        # Map known feeder name variations
+        feeder_mapping = {
+            "11-OPEBIINJ-T1-AGBAOKU": "AGBAOKU",
+            # Add other mappings as needed
+        }
+        return feeder_mapping.get(feeder_name, feeder_name)
+    return ""
+
 # File uploader
 st.subheader("Upload Excel File")
 uploaded_file = st.file_uploader("Choose an Excel file (.xlsx)", type=["xlsx"])
@@ -98,8 +110,8 @@ else:
 
 # Normalize feeder, DT, and tariff names
 feeder_df["Feeder"] = feeder_df["Feeder"].str.strip().str.upper()
-ppm_df["NAME_OF_FEEDER"] = ppm_df["NAME_OF_FEEDER"].str.strip().str.upper()
-ppd_df["NAME_OF_FEEDER"] = ppd_df["NAME_OF_FEEDER"].str.strip().str.upper()
+ppm_df["NAME_OF_FEEDER"] = ppm_df["NAME_OF_FEEDER"].apply(map_feeder_name)
+ppd_df["NAME_OF_FEEDER"] = ppd_df["NAME_OF_FEEDER"].apply(map_feeder_name)
 band_df["Feeder"] = band_df["Feeder"].str.strip().str.upper()
 ppm_df["NAME_OF_DT"] = ppm_df["NAME_OF_DT"].str.strip().str.upper()
 ppd_df["NAME_OF_DT"] = ppd_df["NAME_OF_DT"].str.strip().str.upper()
@@ -336,6 +348,7 @@ if st.checkbox("Debug: Filtered data"):
     st.write("filtered_customer_df columns:", filtered_customer_df.columns.tolist())
     st.write("Sample NAME_OF_FEEDER values:", filtered_customer_df["NAME_OF_FEEDER"].head().tolist())
     st.write("Unique NAME_OF_FEEDER values:", sorted(filtered_customer_df["NAME_OF_FEEDER"].dropna().astype(str).unique()))
+    st.write("Sample NAME_OF_DT values:", filtered_customer_df["NAME_OF_DT"].head().tolist())
     st.write("Unique DT_Short_Name values:", sorted(filtered_customer_df["DT_Short_Name"].dropna().astype(str).unique()))
     st.write("filtered_dt_df rows:", len(filtered_dt_df))
     st.write("Unique New Unique DT Nomenclature values:", sorted(filtered_dt_df["New Unique DT Nomenclature"].dropna().astype(str).unique()))
@@ -345,6 +358,10 @@ st.subheader("DT Theft Probability Heatmap")
 filtered_dt_agg = dt_agg[dt_agg["New Unique DT Nomenclature"].isin(filtered_customer_df[filtered_customer_df["NAME_OF_FEEDER"] == selected_feeder]["NAME_OF_DT"].unique()) | dt_agg["Flag"]]
 if filtered_dt_agg.empty:
     st.error(f"No DT data available for feeder {selected_feeder_short}. Check NAME_OF_FEEDER and NAME_OF_DT in Customer Data.")
+    st.write("Selected feeder:", selected_feeder)
+    st.write("Available NAME_OF_FEEDER values:", sorted(filtered_customer_df["NAME_OF_FEEDER"].dropna().astype(str).unique()))
+    st.write("Available NAME_OF_DT values:", sorted(filtered_customer_df["NAME_OF_DT"].dropna().astype(str).unique()))
+    st.write("Available New Unique DT Nomenclature values:", sorted(dt_agg["New Unique DT Nomenclature"].dropna().astype(str).unique()))
     st.stop()
 pivot_values = "dt_score" if "dt_score" in filtered_dt_agg.columns else "total_dt_kwh"
 dt_pivot = filtered_dt_agg.pivot_table(index="New Unique DT Nomenclature", columns="month", values=pivot_values, aggfunc="mean")
