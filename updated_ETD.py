@@ -116,34 +116,49 @@ if customer_df.empty:
     st.error("customer_df is empty.")
     st.stop()
 
-# Filter for valid feeders from Feeder Data
-valid_feeders = set(feeder_df["Feeder"].astype(str).str.strip().str.upper())
-customer_invalid_feeders = set(customer_df["NAME_OF_FEEDER"].unique()) - valid_feeders
-dt_invalid_feeders = set(dt_df["New Unique DT Nomenclature"].apply(
-    lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
-).unique()) - valid_feeders
-
-# Create error report
+# Filter for valid DTs from Transformer Data
+valid_dts = set(dt_df["New Unique DT Nomenclature"].astype(str).str.strip().str.upper())
+customer_invalid_dts = customer_df[~customer_df["NAME_OF_DT"].isin(valid_dts)]
 error_report = []
-if customer_invalid_feeders:
-    for feeder in customer_invalid_feeders:
-        count = len(customer_df[customer_df["NAME_OF_FEEDER"] == feeder])
-        error_report.append({"Feeder": feeder, "Source": "Customer Data", "Record Count": count})
-if dt_invalid_feeders:
-    for feeder in dt_invalid_feeders:
-        count = len(dt_df[dt_df["New Unique DT Nomenclature"].str.startswith(feeder)])
-        error_report.append({"Feeder": feeder, "Source": "Transformer Data", "Record Count": count})
+if not customer_invalid_dts.empty:
+    for _, row in customer_invalid_dts.iterrows():
+        error_report.append({
+            "ACCOUNT_NUMBER": row["ACCOUNT_NUMBER"],
+            "NAME_OF_DT": row["NAME_OF_DT"],
+            "NAME_OF_FEEDER": row["NAME_OF_FEEDER"],
+            "BUSINESS_UNIT": row["BUSINESS_UNIT"],
+            "UNDERTAKING": row["UNDERTAKING"],
+            "Reason": "NAME_OF_DT not in Transformer Data"
+        })
 error_report_df = pd.DataFrame(error_report)
 
-# Filter data
-customer_df = customer_df[customer_df["NAME_OF_FEEDER"].isin(valid_feeders)]
-dt_df = dt_df[dt_df["New Unique DT Nomenclature"].apply(
-    lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
-).isin(valid_feeders)]
-if customer_df.empty or dt_df.empty:
-    st.error("No valid data after filtering for Feeder Data feeders.")
+# Filter customer_df for valid DTs
+customer_df = customer_df[customer_df["NAME_OF_DT"].isin(valid_dts)]
+if customer_df.empty:
+    st.error("No valid customers after filtering for Transformer Data DTs.")
     st.write("customer_df size:", len(customer_df))
+    st.stop()
+
+# Create short names
+feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(lambda x: get_short_name(x, band_df=band_df))
+dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: get_short_name(x, is_dt=True, band_df=band_df))
+dt_df["Feeder"] = dt_df["New Unique DT Nomenclature"].apply(
+    lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
+)
+dt_df["NAME_OF_DT"] = dt_df["New Unique DT Nomenclature"]
+customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True, band_df=band_df))
+customer_df["Feeder"] = customer_df["NAME_OF_DT"].apply(
+    lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
+)
+
+# Filter for valid feeders from Feeder Data
+valid_feeders = set(feeder_df["Feeder"].astype(str).str.strip().str.upper())
+dt_df = dt_df[dt_df["Feeder"].isin(valid_feeders)]
+customer_df = customer_df[customer_df["Feeder"].isin(valid_feeders)]
+if dt_df.empty or customer_df.empty:
+    st.error("No valid data after filtering for Feeder Data feeders.")
     st.write("dt_df size:", len(dt_df))
+    st.write("customer_df size:", len(customer_df))
     st.stop()
 
 # Add scores to customer_df
@@ -152,22 +167,6 @@ customer_df["account_type_score"] = np.where(customer_df["ACCOUNT_TYPE"] == "POS
 customer_df["customer_account_type_score"] = np.where(customer_df["CUSTOMER_ACCOUNT_TYPE"] == "MD", 0.8, 0.3)
 customer_df["billing_type_score"] = np.where(customer_df["Billing_Type"] == "PPD", 0.5, 0.2)
 customer_df["customer_category_score"] = customer_df["CUSTOMER_CATEGORY"].map({"RESIDENTIAL": 0.2, "COMMERCIAL": 0.5, "SPECIAL": 0.8}).fillna(0.2)
-
-# Create short names
-feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(lambda x: get_short_name(x, band_df=band_df))
-dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: get_short_name(x, is_dt=True, band_df=band_df))
-dt_df["Feeder_Short"] = dt_df["New Unique DT Nomenclature"].apply(
-    lambda x: get_short_name(x, band_df=band_df) if isinstance(x, str) and "-" in x else x
-)
-dt_df["NAME_OF_DT"] = dt_df["New Unique DT Nomenclature"]
-customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True, band_df=band_df))
-customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(lambda x: get_short_name(x, band_df=band_df))
-
-# Map invalid Feeder_Short in dt_df
-valid_feeders_short = set(feeder_df["Feeder_Short"].astype(str).str.strip().str.upper())
-dt_df["Feeder_Short"] = dt_df["Feeder_Short"].apply(
-    lambda x: x if x in valid_feeders_short else "UNKNOWN"
-)
 
 # Merge tariffs
 tariff_matches = customer_df["TARIFF"].isin(tariff_df["Tariff"])
@@ -196,11 +195,13 @@ with col3:
         st.stop()
     selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
 with col4:
-    dt_df_filtered = dt_df[dt_df["Feeder_Short"] == selected_feeder_short]
+    dt_df_filtered = dt_df[dt_df["Feeder"].apply(
+        lambda x: any(f in x for f in valid_feeders)
+    )]
     dt_options = sorted(dt_df_filtered["DT_Short_Name"].unique())
     if not dt_options:
         st.error(f"No DTs available for feeder {selected_feeder_short}.")
-        st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
+        st.write("dt_df Feeder:", sorted(dt_df["Feeder"].unique()))
         st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
         st.write("dt_df Head:", dt_df.head())
         st.stop()
@@ -211,15 +212,18 @@ with col5:
 
 # Filter data by BU and UT
 customer_df = customer_df_ut
-dt_df = dt_df[dt_df["Feeder_Short"].isin(feeder_df["Feeder_Short"])]
-feeder_df = feeder_df[feeder_df["Feeder_Short"].isin(feeder_df["Feeder_Short"])]
+dt_df = dt_df[dt_df["Feeder"].isin(valid_feeders)]
+if dt_df.empty or customer_df.empty:
+    st.error("No valid data after BU/UT filtering.")
+    st.write("dt_df size:", len(dt_df))
+    st.write("customer_df size:", len(customer_df))
+    st.stop()
 
 # Debug
 if st.checkbox("Debug: Data"):
-    st.write("Valid Feeders (Feeder Data):", sorted(feeder_df["Feeder_Short"].unique()))
-    st.write("Invalid Feeders (Customer Data):", sorted(customer_invalid_feeders))
-    st.write("Invalid Feeders (Transformer Data):", sorted(dt_invalid_feeders))
-    st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
+    st.write("Valid Feeders (Feeder Data):", sorted(feeder_df["Feeder"].unique()))
+    st.write("Valid DTs (Transformer Data):", sorted(dt_df["New Unique DT Nomenclature"].unique()))
+    st.write("dt_df Feeder:", sorted(dt_df["Feeder"].unique()))
     st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
     st.write("customer_df Columns:", customer_df.columns.tolist())
     st.write("customer_monthly Columns:", customer_monthly.columns.tolist() if 'customer_monthly' in locals() else "customer_monthly not created yet")
@@ -231,14 +235,14 @@ if st.checkbox("Debug: Data"):
 
 # Error Report Download
 if not error_report_df.empty:
-    st.subheader("Error Report: Invalid Feeders")
-    st.write("The following feeders were found in Customer Data or Transformer Data but not in Feeder Data and were excluded from analysis:")
+    st.subheader("Error Report: Invalid Customer DTs")
+    st.write("The following customer rows were excluded because their NAME_OF_DT is not in Transformer Data:")
     st.dataframe(error_report_df)
     csv = error_report_df.to_csv(index=False)
     st.download_button(
         label="Download Error Report",
         data=csv,
-        file_name="invalid_feeders_report.csv",
+        file_name="invalid_dts_report.csv",
         mime="text/csv"
     )
 
@@ -259,7 +263,7 @@ for df in [feeder_df, dt_df, ppm_df, ppd_df]:
     df.drop(columns=months, errors="ignore", inplace=True)
 
 # Ensure required columns for melt
-required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "Feeder_Short", "Rate (NGN)", "meter_status_score", "account_type_score", "customer_account_type_score", "billing_type_score", "customer_category_score"]
+required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "Feeder", "Rate (NGN)", "meter_status_score", "account_type_score", "customer_account_type_score", "billing_type_score", "customer_category_score"]
 value_vars = [f"{m} (kWh)" for m in months]
 missing_id_vars = [col for col in required_id_vars if col not in customer_df.columns]
 if missing_id_vars:
@@ -280,7 +284,7 @@ except Exception as e:
 
 # DT consumption
 try:
-    dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
+    dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
     dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
 except Exception as e:
     st.error(f"DT melt failed: {e}")
@@ -311,10 +315,10 @@ except Exception as e:
 
 # Feeder scores
 try:
-    feeder_monthly = feeder_df.melt(id_vars=["Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
+    feeder_monthly = feeder_df.melt(id_vars=["Feeder", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
     feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
-    feeder_agg = customer_monthly.groupby(["Feeder_Short", "month"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
-    feeder_merged = feeder_monthly.merge(feeder_agg, on=["Feeder_Short", "month"], how="left")
+    feeder_agg = customer_monthly.groupby(["Feeder", "month"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
+    feeder_merged = feeder_monthly.merge(feeder_agg, on=["Feeder", "month"], how="left")
     feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
     feeder_merged["feeder_score"] = (1 - feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0, 1)).clip(0, 1)
     feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["feeder_energy_kwh"] - feeder_merged["total_billed_kwh"]
@@ -328,7 +332,7 @@ except Exception as e:
 # DT Theft Probability Heatmap
 st.subheader("DT Theft Probability Heatmap")
 try:
-    filtered_dt_agg = dt_agg[dt_agg["Feeder_Short"] == selected_feeder_short]
+    filtered_dt_agg = dt_agg[dt_agg["Feeder"].apply(lambda x: any(f in x for f in valid_feeders))]
     if filtered_dt_agg.empty:
         st.error(f"No DT data for feeder {selected_feeder_short}.")
         st.write("dt_agg:", dt_agg.head())
@@ -355,7 +359,7 @@ except Exception as e:
 # Customer scores
 try:
     customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
-    customer_monthly = customer_monthly.merge(feeder_merged[["Feeder_Short", "month", "feeder_score"]], on=["Feeder_Short", "month"], how="left")
+    customer_monthly = customer_monthly.merge(feeder_merged[["Feeder", "month", "feeder_score"]], on=["Feeder", "month"], how="left")
     customer_monthly = customer_monthly.merge(dt_merged[["New Unique DT Nomenclature", "month", "dt_score"]], left_on=["NAME_OF_DT", "month"], right_on=["New Unique DT Nomenclature", "month"], how="left")
     customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
     customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
