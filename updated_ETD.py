@@ -36,9 +36,9 @@ try:
         sheet_name=None,
         converters={
             "Feeder Data": {"Feeder": preserve_exact_string},
-            "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "DT Number": preserve_exact_string, "Connection Status": preserve_exact_string},
-            "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string, "DT_NO": preserve_exact_string},
-            "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string, "DT_NO": preserve_exact_string},
+            "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "DT Number": preserve_exact_string},
+            "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
+            "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
             "Feeder Band": {"BAND": preserve_exact_string, "Feeder": preserve_exact_string, "Short Name": preserve_exact_string},
             "Customer Tariffs": {"Tariff": preserve_exact_string}
         }
@@ -61,8 +61,8 @@ if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_d
     st.stop()
 
 # Validate column names
-required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING", "DT_NO"]
-required_dt_cols = ["New Unique DT Nomenclature", "DT Number"]
+required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT"]
+required_dt_cols = ["New Unique DT Nomenclature"]
 required_feeder_cols = ["Feeder"]
 for df, name, cols in [(ppm_df, "Customer Data_PPM", required_customer_cols), (ppd_df, "Customer Data_PPD", required_customer_cols), (dt_df, "Transformer Data", required_dt_cols), (feeder_df, "Feeder Data", required_feeder_cols)]:
     missing_cols = [col for col in cols if col not in df.columns]
@@ -88,8 +88,7 @@ else:
 for col, df in [
     ("Feeder", feeder_df), ("NAME_OF_FEEDER", ppm_df), ("NAME_OF_FEEDER", ppd_df), ("Feeder", band_df),
     ("NAME_OF_DT", ppm_df), ("NAME_OF_DT", ppd_df), ("New Unique DT Nomenclature", dt_df),
-    ("TARIFF", ppm_df), ("TARIFF", ppd_df), ("Tariff", tariff_df),
-    ("DT_NO", ppm_df), ("DT_NO", ppd_df), ("DT Number", dt_df)
+    ("TARIFF", ppm_df), ("TARIFF", ppd_df), ("Tariff", tariff_df)
 ]:
     df[col] = df[col].astype(str).str.strip().str.upper()
 
@@ -118,6 +117,7 @@ customer_df = customer_df[customer_df["NAME_OF_FEEDER"].isin(valid_feeders)]
 # Merge tariffs
 customer_df = customer_df.merge(tariff_df[["Tariff", "Rate (NGN)"]], left_on="TARIFF", right_on="Tariff", how="left")
 customer_df["Rate (NGN)"] = customer_df["Rate (NGN)"].fillna(209.5)
+customer_df = customer_df.drop(columns=["Tariff"], errors="ignore")
 
 # Debug
 if st.checkbox("Debug: Data"):
@@ -125,6 +125,7 @@ if st.checkbox("Debug: Data"):
     st.write("Missing Feeders (Customer Data):", sorted(missing_feeders))
     st.write("dt_df Feeder_Short:", sorted(dt_df["Feeder_Short"].unique()))
     st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
+    st.write("customer_df Columns:", customer_df.columns.tolist())
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -142,11 +143,24 @@ for month in months:
 for df in [feeder_df, dt_df, ppm_df, ppd_df]:
     df.drop(columns=months, errors="ignore", inplace=True)
 
-# Melt customer data
+# Ensure required columns for melt
 required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "Feeder_Short", "Rate (NGN)"]
 value_vars = [f"{m} (kWh)" for m in months]
-customer_monthly = customer_df.melt(id_vars=required_id_vars, value_vars=value_vars, var_name="month", value_name="billed_kwh")
-customer_monthly["month"] = customer_monthly["month"].str.replace(" (kWh)", "")
+for col in required_id_vars:
+    if col not in customer_df.columns:
+        customer_df[col] = ""
+for col in value_vars:
+    if col not in customer_df.columns:
+        customer_df[col] = 0
+
+# Melt customer data
+try:
+    customer_monthly = customer_df.melt(id_vars=required_id_vars, value_vars=value_vars, var_name="month", value_name="billed_kwh")
+    customer_monthly["month"] = customer_monthly["month"].str.replace(" (kWh)", "")
+except Exception as e:
+    st.error(f"Melt failed: {e}")
+    st.write("customer_df Columns:", customer_df.columns.tolist())
+    st.stop()
 
 # DT consumption
 dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder_Short"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
