@@ -289,13 +289,11 @@ if dt_df.empty or customer_df.empty:
 if st.checkbox("Debug: Data"):
     st.write("Valid Feeders (Feeder Data):", sorted(feeder_df["Feeder"].unique()))
     st.write("Valid DTs (Transformer Data):", sorted(dt_df["New Unique DT Nomenclature"].unique()))
-    st.write("dt_df Feeder:", sorted(dt_df["Feeder"].unique()))
-    st.write("dt_df DT_Short_Name:", sorted(dt_df["DT_Short_Name"].unique()))
     st.write("dt_df Ownership:", dt_df["Ownership"].unique().tolist())
+    st.write("dt_df Columns:", dt_df.columns.tolist())
     st.write("customer_df Columns:", customer_df.columns.tolist())
-    st.write("customer_monthly Columns:", customer_monthly.columns.tolist() if 'customer_monthly' in locals() else "customer_monthly not created yet")
-    st.write("dt_agg Columns:", dt_agg.columns.tolist() if 'dt_agg' in locals() else "dt_agg not created yet")
-    st.write("dt_merged:", dt_merged.head() if 'dt_merged' in locals() else "dt_merged not created yet")
+    st.write("dt_agg_monthly Columns:", dt_agg_monthly.columns.tolist() if 'dt_agg_monthly' in locals() else "dt_agg_monthly not created yet")
+    st.write("dt_merged_monthly:", dt_merged_monthly.head() if 'dt_merged_monthly' in locals() else "dt_merged_monthly not created yet")
     st.write("feeder_monthly:", feeder_monthly.head() if 'feeder_monthly' in locals() else "feeder_monthly not created yet")
     st.write("feeder_agg:", feeder_agg.head() if 'feeder_agg' in locals() else "feeder_agg not created yet")
     st.write("feeder_merged:", feeder_merged.head() if 'feeder_merged' in locals() else "feeder_merged not created yet")
@@ -327,7 +325,7 @@ for month in months:
         else:
             df[col] = 0
     if month in dt_df.columns:
-        dt_df[f"{month} (kWh)"] = pd.to_numeric(dt_df[month], errors="coerce").fillna(0) / 1000
+        dt_df[f"{month} (kWh)"] = pd.to_numeric(df[month], errors="coerce").fillna(0) / 1000
     else:
         dt_df[f"{month} (kWh)"] = 0
 for df in [feeder_df, dt_df, ppm_df, ppd_df]:
@@ -355,8 +353,8 @@ except Exception as e:
 
 # DT consumption (per month for heatmap)
 try:
-    dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
-    dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
+    dt_agg_monthly = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
+    dt_agg_monthly["month"] = dt_agg_monthly["month"].str.replace(" (kWh)", "")
 except Exception as e:
     st.error(f"DT melt failed: {e}")
     st.write("dt_df Columns:", dt_df.columns.tolist())
@@ -368,7 +366,7 @@ if not selected_months:
     st.error("No months selected.")
     st.stop()
 customer_monthly = customer_monthly[customer_monthly["month"].isin(selected_months)]
-dt_agg_monthly = dt_agg[dt_agg["month"].isin(selected_months)]  # For heatmap
+dt_agg_monthly = dt_agg_monthly[dt_agg_monthly["month"].isin(selected_months)]
 if customer_monthly.empty or dt_agg_monthly.empty:
     st.error(f"No data for selected months {selected_months}.")
     st.write("customer_monthly size:", len(customer_monthly))
@@ -397,9 +395,8 @@ except Exception as e:
 try:
     dt_merged = dt_agg_sum.merge(customer_agg, left_on=["New Unique DT Nomenclature", "Feeder"], right_on=["NAME_OF_DT", "Feeder"], how="left")
     dt_merged["customer_billed_kwh"] = dt_merged["customer_billed_kwh"].fillna(0)
-    # Apply ownership logic for total_billed_kwh
     dt_merged["total_billed_kwh"] = np.where(
-        dt_merged["Ownership"] == "Private",
+        dt_merged["Ownership"].str.strip().str.upper() == "PRIVATE",
         dt_merged["total_dt_kwh"],
         dt_merged["customer_billed_kwh"]
     )
@@ -412,21 +409,28 @@ except Exception as e:
     st.write("customer_agg:", customer_agg.head())
     st.stop()
 
-# Compute per-month DT scores for heatmap
+# Per-month DT scores for heatmap
 try:
-    dt_merged_monthly = dt_agg_monthly.merge(customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "customer_billed_kwh"}), 
-                                            left_on=["New Unique DT Nomenclature", "month"], right_on=["NAME_OF_DT", "month"], how="left")
+    customer_billed_monthly = customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "customer_billed_kwh"})
+    dt_merged_monthly = dt_agg_monthly.merge(customer_billed_monthly, 
+                                            left_on=["New Unique DT Nomenclature", "month"], 
+                                            right_on=["NAME_OF_DT", "month"], 
+                                            how="left")
     dt_merged_monthly["customer_billed_kwh"] = dt_merged_monthly["customer_billed_kwh"].fillna(0)
     dt_merged_monthly["total_billed_kwh"] = np.where(
-        dt_merged_monthly["Ownership"] == "Private",
+        dt_merged_monthly["Ownership"].str.strip().str.upper() == "PRIVATE",
         dt_merged_monthly["total_dt_kwh"],
         dt_merged_monthly["customer_billed_kwh"]
     )
     dt_merged_monthly["dt_score"] = (1 - dt_merged_monthly["total_billed_kwh"] / dt_merged_monthly["total_dt_kwh"].replace(0, 1)).clip(0, 1)
+    if "month" not in dt_merged_monthly.columns:
+        st.error("month column missing in dt_merged_monthly")
+        st.write("dt_merged_monthly Columns:", dt_merged_monthly.columns.tolist())
+        st.stop()
 except Exception as e:
     st.error(f"DT monthly merge failed: {e}")
     st.write("dt_agg_monthly:", dt_agg_monthly.head())
-    st.write("customer_monthly:", customer_monthly.head())
+    st.write("customer_billed_monthly:", customer_billed_monthly.head())
     st.stop()
 
 # Feeder consumption
@@ -520,6 +524,10 @@ try:
     if filtered_dt_agg.empty:
         st.error(f"No DT data for feeder {selected_feeder_short}.")
         st.write("dt_merged_monthly:", dt_merged_monthly.head())
+        st.stop()
+    if "month" not in filtered_dt_agg.columns:
+        st.error("month column missing in filtered_dt_agg")
+        st.write("filtered_dt_agg Columns:", filtered_dt_agg.columns.tolist())
         st.stop()
     dt_pivot = filtered_dt_agg.pivot_table(index="DT_Short_Name", columns="month", values="dt_score", aggfunc="mean")
     if not dt_pivot.empty:
