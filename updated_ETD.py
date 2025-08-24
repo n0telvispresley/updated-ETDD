@@ -16,7 +16,8 @@ def preserve_exact_string(value):
 # Function to extract short feeder and DT names
 def get_short_name(name):
     if isinstance(name, str) and name and "-" in name:
-        return name.split("-")[-1].strip()
+        parts = name.split("-")
+        return parts[-1].strip() if len(parts) == 1 else parts[-2].strip() if len(parts) >= 3 else name.strip()
     return name if isinstance(name, str) else ""
 
 # File uploader
@@ -68,7 +69,7 @@ for df, name, cols in [(ppm_df, "Customer Data_PPM", required_customer_cols), (p
         st.stop()
 
 # Handle missing columns
-for df, col in [(ppm_df, "TARIFF"), (ppd_df, "TARIFF"), (ppm_df, "DT_NO"), (ppd_df, "DT_NO"), (band_df, "BAND"), (tariff_df, "Tariff")]:
+for df, col in [(ppm_df, "TARIFF"), (ppd_df, "TARIFF"), (ppm_df, "DT_NO"), (ppd_df, "DT_NO"), (ppm_df, "FEEDER_NO"), (ppd_df, "FEEDER_NO"), (band_df, "BAND"), (tariff_df, "Tariff")]:
     if col not in df.columns:
         st.warning(f"Column '{col}' not found in {df.name if hasattr(df, 'name') else 'sheet'}. Creating empty column.")
         df[col] = ""
@@ -116,8 +117,7 @@ if customer_df.empty:
 
 # Create short names
 feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(get_short_name)
-dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(get_short_name)
-dt_df["Feeder_Short"] = dt_df["New Unique DT Nomenclature"].apply(get_short_name)
+dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: x.split("-")[-1].strip() if isinstance(x, str) and "-" in x and len(x.split("-")) > 1 else x)
 customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(get_short_name)
 customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(get_short_name)
 
@@ -127,6 +127,17 @@ missing_feeders = set(customer_df["NAME_OF_FEEDER"].unique()) - valid_feeders
 if missing_feeders:
     st.warning(f"Feeders not in Feeder Data: {', '.join(sorted(missing_feeders))}. These customers are excluded.")
 customer_df = customer_df[customer_df["NAME_OF_FEEDER"].isin(valid_feeders)]
+
+# Map DTs to feeders using FEEDER_NO
+feeder_df["Feeder No"] = feeder_df["Feeder No"].astype(str).str.strip().str.upper()
+customer_df["FEEDER_NO"] = customer_df["FEEDER_NO"].astype(str).str.strip().str.upper()
+dt_df = dt_df.merge(
+    feeder_df[["Feeder No", "Feeder_Short"]],
+    left_on="New Unique DT Nomenclature",
+    right_on="Feeder No",
+    how="left"
+)
+dt_df["Feeder_Short"] = dt_df["Feeder_Short"].fillna(dt_df["New Unique DT Nomenclature"].apply(lambda x: x.split("-")[-2].strip() if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x))
 
 # Map customers to DTs
 customer_df = customer_df.merge(
