@@ -28,8 +28,8 @@ try:
         converters={
             "Feeder Data": {"Feeder": preserve_exact_string, "Feeder No": preserve_exact_string},
             "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "DT Number": preserve_exact_string, "Ownership": preserve_exact_string, "Connection Status": preserve_exact_string},
-            "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string},
-            "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string},
+            "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "DT_NO": preserve_exact_string, "FEEDER_NO": preserve_exact_string},
+            "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "DT_NO": preserve_exact_string, "FEEDER_NO": preserve_exact_string},
             "Feeder Band": {"BAND": preserve_exact_string, "Feeder": preserve_exact_string, "Short Name": preserve_exact_string},
             "Customer Tariffs": {"Tariff": preserve_exact_string}
         }
@@ -64,8 +64,14 @@ if st.checkbox("Show debug info"):
     st.write("Count of empty ACCOUNT_NUMBER:", (customer_df["ACCOUNT_NUMBER"] == "").sum())
     st.write("Sample METER_NUMBER values:", customer_df["METER_NUMBER"].head().tolist())
     st.write("Count of empty METER_NUMBER:", (customer_df["METER_NUMBER"] == "").sum())
+    st.write("Sample NAME_OF_DT values:", customer_df["NAME_OF_DT"].head().tolist())
+    st.write("Sample DT_NO values:", customer_df["DT_NO"].head().tolist())
+    st.write("Sample NAME_OF_FEEDER values:", customer_df["NAME_OF_FEEDER"].head().tolist())
+    st.write("Sample FEEDER_NO values:", customer_df["FEEDER_NO"].head().tolist())
     st.write("Transformer JAN-JUN dtypes:", dt_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].dtypes)
     st.write("Sample Transformer JAN-JUN values:", dt_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].head().to_dict())
+    st.write("Sample Transformer New Unique DT Nomenclature:", dt_df["New Unique DT Nomenclature"].head().tolist())
+    st.write("Sample Transformer DT Number:", dt_df["DT Number"].head().tolist())
     st.write("PPD JAN-JUN dtypes:", ppd_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].dtypes)
     st.write("Sample PPD JAN-JUN values:", ppd_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].head().to_dict())
 
@@ -117,6 +123,12 @@ def map_dt_to_feeder(dt_name):
 dt_df["Feeder"] = dt_df["New Unique DT Nomenclature"].apply(map_dt_to_feeder)
 dt_df = dt_df.dropna(subset=["Feeder"])
 
+# Validate DT_NO and DT Number
+dt_validation = customer_df.merge(dt_df[["New Unique DT Nomenclature", "DT Number"]], left_on="DT_NO", right_on="DT Number", how="left")
+unmatched_dts = dt_validation[dt_validation["New Unique DT Nomenclature"].isna()]["DT_NO"].unique()
+if len(unmatched_dts) > 0:
+    st.warning(f"Unmatched DT_NO values: {unmatched_dts.tolist()}")
+
 # Merge with tariffs
 customer_df = customer_df.merge(tariff_df[["Tariff", "Rate (₦)"]], left_on="TARIFF", right_on="Tariff", how="left")
 customer_df["Rate (₦)"] = customer_df["Rate (₦)"].fillna(209.5)
@@ -140,10 +152,10 @@ feeder_merged["total_dt_kwh"] = feeder_merged["total_dt_kwh"].fillna(0)
 feeder_merged["feeder_score"] = (1 - feeder_merged["total_dt_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0, 1)).clip(0, 1)
 feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["feeder_energy_kwh"] - feeder_merged["total_dt_kwh"]
 feeder_merged = feeder_merged.merge(band_df[["Feeder", "BAND"]], on="Feeder", how="left")
-feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * 209.5  # Default rate
+feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * 209.5
 
 # Calculate total billed energy per DT per month
-customer_monthly = customer_df.melt(id_vars=["NAME_OF_DT", "ACCOUNT_NUMBER", "Rate (₦)", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "NAME_OF_FEEDER"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="billed_kwh")
+customer_monthly = customer_df.melt(id_vars=["NAME_OF_DT", "ACCOUNT_NUMBER", "Rate (₦)", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="billed_kwh")
 customer_monthly["month"] = customer_monthly["month"].str.replace(" (kWh)", "")
 customer_agg = customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].sum().reset_index()
 customer_agg.rename(columns={"billed_kwh": "total_billed_kwh"}, inplace=True)
@@ -155,13 +167,15 @@ dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt
 dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_billed_kwh"]
 dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
 
-# Debug: Check dt_no_customers columns
-dt_no_customers = dt_merged[~dt_merged["New Unique DT Nomenclature"].isin(customer_df["NAME_OF_DT"])]
-if st.checkbox("Debug: Show dt_no_customers columns"):
-    st.write("dt_no_customers columns:", dt_no_customers.columns.tolist())
-    st.write("dt_no_customers sample:", dt_no_customers.head().to_dict())
+# Debug: Check merge inputs
+if st.checkbox("Debug: Merge inputs for customer_monthly"):
+    st.write("customer_monthly NAME_OF_DT unique values:", customer_monthly["NAME_OF_DT"].unique().tolist())
+    st.write("dt_merged New Unique DT Nomenclature unique values:", dt_merged["New Unique DT Nomenclature"].unique().tolist())
+    st.write("customer_monthly month unique values:", customer_monthly["month"].unique().tolist())
+    st.write("dt_merged month unique values:", dt_merged["month"].unique().tolist())
 
 # Handle MD-owned DTs
+dt_no_customers = dt_merged[~dt_merged["New Unique DT Nomenclature"].isin(customer_df["NAME_OF_DT"])]
 md_customers = dt_no_customers[["New Unique DT Nomenclature", "DT Number", "Feeder", "month", "dt_score", "Flag"]].copy()
 md_customers["ACCOUNT_NUMBER"] = md_customers["DT Number"]
 md_customers["METER_NUMBER"] = md_customers["DT Number"]
@@ -175,6 +189,8 @@ md_customers["Billing_Type"] = "PPD"
 md_customers["CUSTOMER_CATEGORY"] = "Special"
 md_customers["Rate (₦)"] = 209.5
 md_customers["NAME_OF_FEEDER"] = md_customers["Feeder"]
+md_customers["BUSINESS_UNIT"] = "MD"
+md_customers["UNDERTAKING"] = "MD"
 md_customers["theft_probability"] = md_customers["dt_score"]
 md_customers["meter_status_score"] = 0.9
 md_customers["account_type_score"] = 0.8
@@ -189,6 +205,8 @@ customer_monthly = pd.concat([customer_monthly, md_customers], ignore_index=True
 # Calculate customer scores
 customer_monthly = customer_monthly.merge(feeder_merged[["Feeder", "month", "feeder_score"]], left_on=["NAME_OF_FEEDER", "month"], right_on=["Feeder", "month"], how="left")
 customer_monthly = customer_monthly.merge(dt_merged[["New Unique DT Nomenclature", "month", "dt_score"]], left_on=["NAME_OF_DT", "month"], right_on=["New Unique DT Nomenclature", "month"], how="left")
+if "dt_score" not in customer_monthly.columns:
+    customer_monthly["dt_score"] = 0
 customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
 customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
 customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
