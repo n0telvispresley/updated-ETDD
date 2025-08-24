@@ -76,12 +76,17 @@ if "Feeder" not in band_df.columns:
 if "Short Name" not in band_df.columns:
     st.error(f"Column 'Short Name' not found in Feeder Band. Available columns: {band_df.columns.tolist()}")
     st.stop()
-if "Tariff" not in tariff_df.columns or "Rate (₦)" not in tariff_df.columns:
-    st.error(f"Missing columns in Customer Tariffs: {['Tariff', 'Rate (₦)']}. Available columns: {tariff_df.columns.tolist()}")
+if "Tariff" not in tariff_df.columns:
+    st.error(f"Column 'Tariff' not found in Customer Tariffs. Available columns: {tariff_df.columns.tolist()}")
     tariff_df["Tariff"] = ""
-    tariff_df["Rate (₦)"] = 209.5
+if "Rate (₦)" not in tariff_df.columns:
+    st.warning(f"Column 'Rate (₦)' not found in Customer Tariffs. Available columns: {tariff_df.columns.tolist()}. Renaming 'Rate' if present or creating with default 209.5.")
+    if "Rate" in tariff_df.columns:
+        tariff_df["Rate (₦)"] = tariff_df["Rate"]
+    else:
+        tariff_df["Rate (₦)"] = 209.5
 
-# Normalize feeder and DT names for consistent matching
+# Normalize feeder, DT, and tariff names
 feeder_df["Feeder"] = feeder_df["Feeder"].str.strip().str.upper()
 ppm_df["NAME_OF_FEEDER"] = ppm_df["NAME_OF_FEEDER"].str.strip().str.upper()
 ppd_df["NAME_OF_FEEDER"] = ppd_df["NAME_OF_FEEDER"].str.strip().str.upper()
@@ -89,6 +94,9 @@ band_df["Feeder"] = band_df["Feeder"].str.strip().str.upper()
 ppm_df["NAME_OF_DT"] = ppm_df["NAME_OF_DT"].str.strip().str.upper()
 ppd_df["NAME_OF_DT"] = ppd_df["NAME_OF_DT"].str.strip().str.upper()
 dt_df["New Unique DT Nomenclature"] = dt_df["New Unique DT Nomenclature"].str.strip().str.upper()
+ppm_df["TARIFF"] = ppm_df["TARIFF"].str.strip().str.upper()
+ppd_df["TARIFF"] = ppd_df["TARIFF"].str.strip().str.upper()
+tariff_df["Tariff"] = tariff_df["Tariff"].str.strip().str.upper()
 
 # Combine PPM and PPD into customer_df
 ppm_df["Billing_Type"] = "PPM"
@@ -107,9 +115,17 @@ customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(get_dt_short_name
 dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(get_dt_short_name)
 
 # Merge with tariffs
-customer_df = customer_df.merge(tariff_df[["Tariff", "Rate (₦)"]], left_on="TARIFF", right_on="Tariff", how="left")
-customer_df["Rate (₦)"] = customer_df["Rate (₦)"].fillna(209.5)
+tariff_merge = customer_df.merge(tariff_df[["Tariff", "Rate (₦)"]], left_on="TARIFF", right_on="Tariff", how="left")
+customer_df["Rate (₦)"] = tariff_merge["Rate (₦)"].fillna(209.5)
 customer_df = customer_df.drop(columns=["Tariff"], errors="ignore")
+
+# Debug: Check tariff merge
+if st.checkbox("Debug: Tariff merge"):
+    st.write("customer_df TARIFF unique values:", sorted(customer_df["TARIFF"].dropna().astype(str).unique()))
+    st.write("tariff_df Tariff unique values:", sorted(tariff_df["Tariff"].dropna().astype(str).unique()))
+    st.write("Rows in customer_df with Rate (₦) after merge:", len(customer_df[customer_df["Rate (₦)"].notna()]))
+    st.write("Rows in customer_df with null Rate (₦):", len(customer_df[customer_df["Rate (₦)"].isna()]))
+    st.write("Sample Rate (₦) values:", customer_df["Rate (₦)"].head().tolist())
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
