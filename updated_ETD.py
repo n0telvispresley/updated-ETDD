@@ -14,10 +14,12 @@ def preserve_exact_string(value):
     return str(value)
 
 # Function to extract short feeder and DT names
-def get_short_name(name):
+def get_short_name(name, is_dt=False):
     if isinstance(name, str) and name and "-" in name:
         parts = name.split("-")
-        return parts[-1].strip() if len(parts) == 1 else parts[-2].strip() if len(parts) >= 3 else name.strip()
+        if is_dt:
+            return parts[-1].strip()  # DT name is last part
+        return parts[-1].strip()  # Feeder name is last part in Feeder Data
     return name if isinstance(name, str) else ""
 
 # File uploader
@@ -77,7 +79,7 @@ if "Feeder" not in band_df.columns:
     st.error(f"Column 'Feeder' not found in Feeder Band.")
     st.stop()
 if "Short Name" not in band_df.columns:
-    band_df["Short Name"] = band_df["Feeder"].apply(get_short_name)
+    band_df["Short Name"] = band_df["Feeder"].apply(lambda x: get_short_name(x))
 
 # Handle Rate column variants
 rate_variants = ["Rate (NGN)", "Rate (₦)", "Rate", "RATE", "Rate(NGN)", "Rate(₦)"]
@@ -116,10 +118,11 @@ if customer_df.empty:
     st.stop()
 
 # Create short names
-feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(get_short_name)
-dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: x.split("-")[-1].strip() if isinstance(x, str) and "-" in x and len(x.split("-")) > 1 else x)
-customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(get_short_name)
-customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(get_short_name)
+feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(lambda x: get_short_name(x))
+dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: get_short_name(x, is_dt=True))
+dt_df["Feeder_Short"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: x.split("-")[-2].strip() if isinstance(x, str) and "-" in x and len(x.split("-")) >= 2 else x)
+customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True))
+customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(lambda x: get_short_name(x))
 
 # Filter customer_df for valid feeders
 valid_feeders = set(feeder_df["Feeder"].astype(str).str.strip().str.upper())
@@ -127,17 +130,6 @@ missing_feeders = set(customer_df["NAME_OF_FEEDER"].unique()) - valid_feeders
 if missing_feeders:
     st.warning(f"Feeders not in Feeder Data: {', '.join(sorted(missing_feeders))}. These customers are excluded.")
 customer_df = customer_df[customer_df["NAME_OF_FEEDER"].isin(valid_feeders)]
-
-# Map DTs to feeders using FEEDER_NO
-feeder_df["Feeder No"] = feeder_df["Feeder No"].astype(str).str.strip().str.upper()
-customer_df["FEEDER_NO"] = customer_df["FEEDER_NO"].astype(str).str.strip().str.upper()
-dt_df = dt_df.merge(
-    feeder_df[["Feeder No", "Feeder_Short"]],
-    left_on="New Unique DT Nomenclature",
-    right_on="Feeder No",
-    how="left"
-)
-dt_df["Feeder_Short"] = dt_df["Feeder_Short"].fillna(dt_df["New Unique DT Nomenclature"].apply(lambda x: x.split("-")[-2].strip() if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x))
 
 # Map customers to DTs
 customer_df = customer_df.merge(
@@ -188,8 +180,8 @@ for df in [feeder_df, dt_df, ppm_df, ppd_df]:
 # Recombine customer_df
 customer_df = pd.concat([ppm_df, ppd_df], ignore_index=True)
 customer_df = customer_df[customer_df["NAME_OF_FEEDER"].isin(valid_feeders)]
-customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(get_short_name)
-customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(get_short_name)
+customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True))
+customer_df["Feeder_Short"] = customer_df["NAME_OF_FEEDER"].apply(lambda x: get_short_name(x))
 
 # Melt customer data
 required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "Feeder_Short", "BUSINESS_UNIT", "UNDERTAKING", "DT_NO"]
@@ -306,7 +298,7 @@ with col5:
     dt_options = dt_df[dt_df["Feeder_Short"] == selected_feeder_short.replace(" (Not in Feeder Data)", "")]["DT_Short_Name"].dropna().astype(str).unique().tolist()
     dt_options = sorted(dt_options)
     if not dt_options and selected_feeder_short in feeder_options:
-        st.error(f"No DTs available for feeder {selected_feeder_short}. Check Feeder and New Unique DT Nomenclature in Transformer Data.")
+        st.error(f"No DTs available for feeder {selected_feeder_short}. Check New Unique DT Nomenclature in Transformer Data.")
         st.write("Available Feeder_Short values:", sorted(dt_df["Feeder_Short"].dropna().astype(str).unique()))
         st.write("Available DT_Short_Name values:", sorted(dt_df["DT_Short_Name"].dropna().astype(str).unique()))
         st.stop()
