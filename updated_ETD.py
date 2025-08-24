@@ -3,6 +3,7 @@ import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
 import seaborn as sns
+import re
 
 # Set Streamlit page config
 st.set_page_config(page_title="IE Energy Theft Detection Dashboard", layout="wide")
@@ -12,6 +13,15 @@ def preserve_exact_string(value):
     if pd.isna(value) or value is None:
         return ""
     return str(value)
+
+# Enhanced normalization function
+def normalize_name(name):
+    if not isinstance(name, str):
+        return ""
+    name = re.sub(r'\s+', ' ', name.strip().upper())  # Normalize spaces
+    name = re.sub(r'[^\w\s-]', '', name)  # Remove special characters except hyphen
+    name = re.sub(r'-+', '-', name)  # Replace multiple hyphens with single
+    return name
 
 # Function to extract short feeder and DT names
 def get_short_name(name, is_dt=False):
@@ -78,7 +88,7 @@ for df, name, cols in [
     if missing_cols:
         if name == "Transformer Data" and "Ownership" in missing_cols:
             st.warning("Ownership column missing in Transformer Data. Assuming all DTs are public.")
-            dt_df["Ownership"] = "Public"
+            dt_df["Ownership"] = "PUBLIC"
         else:
             st.error(f"Missing columns in {name}: {missing_cols}")
             st.stop()
@@ -135,7 +145,22 @@ for col, df in [
     ("BUSINESS_UNIT", ppm_df), ("BUSINESS_UNIT", ppd_df),
     ("UNDERTAKING", ppm_df), ("UNDERTAKING", ppd_df)
 ]:
-    df[col] = df[col].astype(str).str.strip().str.upper()
+    df[col] = df[col].apply(normalize_name)
+
+# Data preprocessing (moved before debug)
+for month in months:
+    for df, unit in [(feeder_df, 1000), (ppm_df, 1), (ppd_df, 1)]:
+        col = f"{month} (kWh)"
+        if month in df.columns:
+            df[col] = pd.to_numeric(df[month], errors="coerce").fillna(0) * unit
+        else:
+            df[col] = 0
+    if month in dt_df.columns:
+        dt_df[f"{month} (kWh)"] = pd.to_numeric(dt_df[month], errors="coerce").fillna(0)  # Already in kWh
+    else:
+        dt_df[f"{month} (kWh)"] = 0
+for df in [feeder_df, dt_df, ppm_df, ppd_df]:
+    df.drop(columns=months, errors="ignore", inplace=True)
 
 # Combine PPM and PPD
 ppm_df["Billing_Type"] = "PPM"
@@ -146,7 +171,7 @@ if customer_df.empty:
     st.stop()
 
 # Filter for valid DTs from Transformer Data
-valid_dts = set(dt_df["New Unique DT Nomenclature"].astype(str).str.strip().str.upper())
+valid_dts = set(dt_df["New Unique DT Nomenclature"])
 customer_invalid_dts = customer_df[~customer_df["NAME_OF_DT"].isin(valid_dts)]
 error_report = []
 if not customer_invalid_dts.empty:
@@ -166,7 +191,6 @@ customer_df = customer_df[customer_df["NAME_OF_DT"].isin(valid_dts)]
 if customer_df.empty:
     st.error("No valid customers after filtering for Transformer Data DTs.")
     st.write("customer_df size:", len(customer_df))
-    st.write("valid_dts:", sorted(valid_dts))
     st.stop()
 
 # Create short names and feeder links
@@ -175,21 +199,22 @@ dt_df["DT_Short_Name"] = dt_df["New Unique DT Nomenclature"].apply(lambda x: get
 dt_df["Feeder"] = dt_df["New Unique DT Nomenclature"].apply(
     lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
 )
+dt_df["Feeder"] = dt_df["Feeder"].apply(normalize_name)
 dt_df["NAME_OF_DT"] = dt_df["New Unique DT Nomenclature"]
 customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True))
 customer_df["Feeder"] = customer_df["NAME_OF_DT"].apply(
     lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
 )
+customer_df["Feeder"] = customer_df["Feeder"].apply(normalize_name)
 
 # Filter for valid feeders from Feeder Data
-valid_feeders = set(feeder_df["Feeder"].astype(str).str.strip().str.upper())
+valid_feeders = set(feeder_df["Feeder"])
 dt_df = dt_df[dt_df["Feeder"].isin(valid_feeders)]
 customer_df = customer_df[customer_df["Feeder"].isin(valid_feeders)]
 if dt_df.empty or customer_df.empty:
     st.error("No valid data after filtering for Feeder Data feeders.")
     st.write("dt_df size:", len(dt_df))
     st.write("customer_df size:", len(customer_df))
-    st.write("valid_feeders:", sorted(valid_feeders))
     st.stop()
 
 # Map DTs to feeder tariff rates
@@ -285,7 +310,6 @@ if dt_df.empty or customer_df.empty:
     st.error("No valid data after BU/UT filtering.")
     st.write("dt_df size:", len(dt_df))
     st.write("customer_df size:", len(customer_df))
-    st.write("valid_feeders:", sorted(valid_feeders))
     st.stop()
 
 # Debug
@@ -311,10 +335,20 @@ if st.checkbox("Debug: Data"):
     st.write("PPD Energy Sample (kWh):", ppd_df[[f"{m} (kWh)" for m in months]].head())
     if selected_dt_short:
         selected_dt_full = dt_df[dt_df["DT_Short_Name"] == selected_dt_short]["New Unique DT Nomenclature"].iloc[0] if not dt_df[dt_df["DT_Short_Name"] == selected_dt_short].empty else "Not found"
-        dt_customers = customer_monthly[customer_monthly["DT_Short_Name"] == selected_dt_short] if 'customer_monthly' in locals() else pd.DataFrame()
-        st.write(f"Customers for {selected_dt_short}:", dt_customers[["ACCOUNT_NUMBER", "month", "billed_kwh"]] if not dt_customers.empty else "No customers found")
-        st.write(f"Customer Billed kWh for {selected_dt_short} ({selected_dt_full}):", 
-                 customer_billed_monthly[customer_billed_monthly["NAME_OF_DT"] == selected_dt_full] if 'customer_billed_monthly' in locals() and selected_dt_full != "Not found" else "Not calculated yet")
+        dt_customers = customer_df[customer_df["DT_Short_Name"] == selected_dt_short][["ACCOUNT_NUMBER", "NAME_OF_DT"] + [f"{m} (kWh)" for m in months]] if not customer_df[customer_df["DT_Short_Name"] == selected_dt_short].empty else pd.DataFrame()
+        st.write(f"Customers for {selected_dt_short}:", dt_customers if not dt_customers.empty else "No customers found")
+        st.write(f"DT Ownership for {selected_dt_short}:", dt_df[dt_df["DT_Short_Name"] == selected_dt_short]["Ownership"].iloc[0] if not dt_df[dt_df["DT_Short_Name"] == selected_dt_short].empty else "Not found")
+        if 'customer_billed_monthly' in locals() and selected_dt_full != "Not found":
+            st.write(f"Customer Billed kWh for {selected_dt_short} ({selected_dt_full}):", 
+                     customer_billed_monthly[customer_billed_monthly["NAME_OF_DT"] == selected_dt_full][["month", "customer_billed_kwh"]])
+        else:
+            st.write(f"Customer Billed kWh for {selected_dt_short} ({selected_dt_full}):", "Not calculated yet")
+        # Additional debug for SULE ABUKA II
+        if selected_dt_short == "SULE ABUKA II":
+            sule_dt_full = dt_df[dt_df["DT_Short_Name"] == "SULE ABUKA II"]["New Unique DT Nomenclature"].iloc[0] if not dt_df[dt_df["DT_Short_Name"] == "SULE ABUKA II"].empty else "Not found"
+            sule_customers = customer_df[customer_df["NAME_OF_DT"].str.contains("SULE ABUKA II", case=False, na=False)][["ACCOUNT_NUMBER", "NAME_OF_DT"] + [f"{m} (kWh)" for m in months]]
+            st.write(f"All Customers with SULE ABUKA II in NAME_OF_DT:", sule_customers if not sule_customers.empty else "No customers found")
+            st.write(f"Exact DT Match for {sule_dt_full}:", customer_df[customer_df["NAME_OF_DT"] == sule_dt_full][["ACCOUNT_NUMBER", "NAME_OF_DT"] + [f"{m} (kWh)" for m in months]] if sule_dt_full != "Not found" else "DT not found")
 
 # Error Report Download
 if not error_report_df.empty:
@@ -328,21 +362,6 @@ if not error_report_df.empty:
         file_name="invalid_dts_report.csv",
         mime="text/csv"
     )
-
-# Data preprocessing
-for month in months:
-    for df, unit in [(feeder_df, 1000), (ppm_df, 1), (ppd_df, 1)]:
-        col = f"{month} (kWh)"
-        if month in df.columns:
-            df[col] = pd.to_numeric(df[month], errors="coerce").fillna(0) * unit
-        else:
-            df[col] = 0
-    if month in dt_df.columns:
-        dt_df[f"{month} (kWh)"] = pd.to_numeric(dt_df[month], errors="coerce").fillna(0)  # Already in kWh
-    else:
-        dt_df[f"{month} (kWh)"] = 0
-for df in [feeder_df, dt_df, ppm_df, ppd_df]:
-    df.drop(columns=months, errors="ignore", inplace=True)
 
 # Ensure required columns for melt
 required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "Feeder", "Rate (NGN)", "meter_status_score", "account_type_score", "customer_account_type_score", "billing_type_score", "customer_category_score"]
@@ -411,7 +430,7 @@ try:
     dt_merged = dt_agg_sum.merge(customer_agg, left_on=["New Unique DT Nomenclature", "Feeder"], right_on=["NAME_OF_DT", "Feeder"], how="left")
     dt_merged["customer_billed_kwh"] = dt_merged["customer_billed_kwh"].fillna(0)
     dt_merged["total_billed_kwh"] = np.where(
-        dt_merged["Ownership"].str.strip().str.upper() == "PRIVATE",
+        dt_merged["Ownership"].str.strip().str.upper().isin(["PRIVATE"]),
         dt_merged["total_dt_kwh"],
         dt_merged["customer_billed_kwh"]
     )
@@ -433,7 +452,7 @@ try:
                                             how="left")
     dt_merged_monthly["customer_billed_kwh"] = dt_merged_monthly["customer_billed_kwh"].fillna(0)
     dt_merged_monthly["total_billed_kwh"] = np.where(
-        dt_merged_monthly["Ownership"].str.strip().str.upper() == "PRIVATE",
+        dt_merged_monthly["Ownership"].str.strip().str.upper().isin(["PRIVATE"]),
         dt_merged_monthly["total_dt_kwh"],
         dt_merged_monthly["customer_billed_kwh"]
     )
