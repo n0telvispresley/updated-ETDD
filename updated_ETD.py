@@ -136,6 +136,9 @@ if st.checkbox("Debug: Tariff merge"):
     st.write("Rows in customer_df with Rate (NGN) after merge:", len(customer_df[customer_df["Rate (NGN)"].notna()]))
     st.write("Rows in customer_df with null Rate (NGN):", len(customer_df[customer_df["Rate (NGN)"].isna()]))
     st.write("Sample Rate (NGN) values:", customer_df["Rate (NGN)"].head().tolist())
+    st.write("tariff_df columns:", tariff_df.columns.tolist())
+    st.write("Sample tariff_df Tariff values:", tariff_df["Tariff"].head().tolist())
+    st.write("Sample tariff_df Rate (NGN) values:", tariff_df["Rate (NGN)"].head().tolist())
 
 # Data preprocessing
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
@@ -186,20 +189,31 @@ if st.checkbox("Debug: Customer Data before melt"):
     st.write("Sample NAME_OF_DT values:", customer_df["NAME_OF_DT"].head().tolist())
     st.write("Sample DT_Short_Name values:", customer_df["DT_Short_Name"].head().tolist())
     st.write("Sample NAME_OF_FEEDER values:", customer_df["NAME_OF_FEEDER"].head().tolist())
-    st.write("Sample Rate (NGN) values:", customer_df["Rate (NGN)"].head().tolist())
+    st.write("Sample Rate (NGN) values:", customer_df["Rate (NGN)"].head().tolist() if "Rate (NGN)" in customer_df.columns else "Rate (NGN) missing")
     st.write("Month columns present:", [col for col in customer_df.columns if col.endswith(" (kWh)")])
-    st.write("tariff_df columns:", tariff_df.columns.tolist())
-    st.write("Sample tariff_df Tariff values:", tariff_df["Tariff"].head().tolist())
-    st.write("Sample tariff_df Rate (NGN) values:", tariff_df["Rate (NGN)"].head().tolist())
 
-# Validate columns for melt
-required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "Rate (NGN)", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING"]
+# Validate columns for melt and proceed even if Rate (NGN) is missing
+required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING"]
+if "Rate (NGN)" in customer_df.columns:
+    required_id_vars.append("Rate (NGN)")
 value_vars = [m + " (kWh)" for m in months]
 missing_id_vars = [col for col in required_id_vars if col not in customer_df.columns]
 missing_value_vars = [col for col in value_vars if col not in customer_df.columns]
 if missing_id_vars or missing_value_vars:
-    st.error(f"Missing columns in customer_df for melt. Missing id_vars: {missing_id_vars}, Missing value_vars: {missing_value_vars}")
-    st.stop()
+    st.warning(f"Missing columns in customer_df for melt. Missing id_vars: {missing_id_vars}, Missing value_vars: {missing_value_vars}. Continuing without customer-level analysis.")
+
+# Try to perform melt
+customer_monthly = None
+try:
+    customer_monthly = customer_df.melt(
+        id_vars=required_id_vars,
+        value_vars=value_vars,
+        var_name="month",
+        value_name="billed_kwh"
+    )
+    customer_monthly["month"] = customer_monthly["month"].str.replace(" (kWh)", "")
+except Exception as e:
+    st.error(f"Melt operation failed: {e}. Skipping customer-level analysis but continuing with feeder/DT lookup.")
 
 # Verify unbilled energy accuracy
 dt_df["Calculated Avg Monthly Unbilled Energy (kWh)"] = sum(dt_df[m + " (kWh)"] for m in months) / 6
@@ -223,99 +237,6 @@ customer_df["customer_category_score"] = customer_df["CUSTOMER_CATEGORY"].map({"
 # Calculate total DT consumption per DT per month
 dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT Number", "Flag", "DT_Short_Name"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
 dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
-
-# Calculate total billed energy per DT per month
-customer_monthly = customer_df.melt(id_vars=["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "Rate (NGN)", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="billed_kwh")
-customer_monthly["month"] = customer_monthly["month"].str.replace(" (kWh)", "")
-customer_agg = customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].sum().reset_index()
-customer_agg.rename(columns={"billed_kwh": "total_billed_kwh"}, inplace=True)
-
-# Calculate DT scores
-dt_merged = dt_agg.merge(customer_agg, left_on=["New Unique DT Nomenclature", "month"], right_on=["NAME_OF_DT", "month"], how="left")
-dt_merged["total_billed_kwh"] = dt_merged["total_billed_kwh"].fillna(0)
-dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0, 1)).clip(0, 1)
-dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_billed_kwh"]
-dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
-
-# Calculate feeder scores using customer_df's NAME_OF_FEEDER
-feeder_monthly = feeder_df.melt(id_vars=["Feeder"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
-feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
-feeder_agg = customer_monthly.groupby(["NAME_OF_FEEDER", "month"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
-feeder_merged = feeder_monthly.merge(feeder_agg, left_on=["Feeder", "month"], right_on=["NAME_OF_FEEDER", "month"], how="left")
-feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
-feeder_merged["feeder_score"] = (1 - feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0, 1)).clip(0, 1)
-feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["feeder_energy_kwh"] - feeder_merged["total_billed_kwh"]
-feeder_merged = feeder_merged.merge(band_df[["Feeder", "Short Name", "BAND"]], on="Feeder", how="left")
-feeder_merged["BAND"] = feeder_merged["BAND"].fillna("")  # Fallback for missing BAND
-feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * 209.5
-
-# Debug: Check merge inputs
-if st.checkbox("Debug: Merge inputs for customer_monthly"):
-    st.write("customer_monthly NAME_OF_DT unique values:", sorted(customer_monthly["NAME_OF_DT"].dropna().astype(str).unique()))
-    st.write("dt_merged New Unique DT Nomenclature unique values:", sorted(dt_merged["New Unique DT Nomenclature"].dropna().astype(str).unique()))
-    st.write("customer_monthly NAME_OF_FEEDER unique values:", sorted(customer_monthly["NAME_OF_FEEDER"].dropna().astype(str).unique()))
-    st.write("feeder_merged Feeder unique values:", sorted(feeder_merged["Feeder"].dropna().astype(str).unique()))
-    st.write("customer_monthly month unique values:", customer_monthly["month"].unique().tolist())
-    st.write("dt_merged month unique values:", dt_merged["month"].unique().tolist())
-    st.write("feeder_merged BAND values:", feeder_merged["BAND"].dropna().unique().tolist())
-
-# Debug: Check feeder_summary merge inputs
-if st.checkbox("Debug: Feeder summary merge"):
-    st.write("feeder_merged[month == 'JUN'] Feeder values:", sorted(feeder_merged[feeder_merged["month"] == "JUN"]["Feeder"].dropna().astype(str).unique()))
-    st.write("band_df Feeder values:", sorted(band_df["Feeder"].dropna().astype(str).unique()))
-
-# Handle MD-owned DTs
-dt_no_customers = dt_merged[~dt_merged["New Unique DT Nomenclature"].isin(customer_df["NAME_OF_DT"])]
-md_customers = dt_no_customers[["New Unique DT Nomenclature", "DT Number", "month", "dt_score", "Flag", "DT_Short_Name"]].copy()
-md_customers["ACCOUNT_NUMBER"] = md_customers["DT Number"]
-md_customers["METER_NUMBER"] = md_customers["DT Number"]
-md_customers["CUSTOMER_NAME"] = md_customers["New Unique DT Nomenclature"]
-md_customers["ADDRESS"] = "MD-Owned DT"
-md_customers["billed_kwh"] = 0
-md_customers["METER_STATUS"] = "Not Metered"
-md_customers["ACCOUNT_TYPE"] = "Postpaid"
-md_customers["CUSTOMER_ACCOUNT_TYPE"] = "MD"
-md_customers["Billing_Type"] = "PPD"
-md_customers["CUSTOMER_CATEGORY"] = "Special"
-md_customers["Rate (NGN)"] = 209.5
-md_customers["NAME_OF_FEEDER"] = "Unknown"  # Will be filtered out unless matched
-md_customers["BUSINESS_UNIT"] = "MD"
-md_customers["UNDERTAKING"] = "MD"
-md_customers["theft_probability"] = md_customers["dt_score"]
-md_customers["meter_status_score"] = 0.9
-md_customers["account_type_score"] = 0.8
-md_customers["customer_account_type_score"] = 0.8
-md_customers["billing_type_score"] = 0.5
-md_customers["customer_category_score"] = 0.8
-md_customers["energy_billed_score"] = 0.0
-
-# Append MD-owned DTs
-customer_monthly = pd.concat([customer_monthly, md_customers], ignore_index=True)
-
-# Calculate customer scores
-customer_monthly = customer_monthly.merge(feeder_merged[["Feeder", "month", "feeder_score"]], left_on=["NAME_OF_FEEDER", "month"], right_on=["Feeder", "month"], how="left")
-customer_monthly = customer_monthly.merge(dt_merged[["New Unique DT Nomenclature", "month", "dt_score"]], left_on=["NAME_OF_DT", "month"], right_on=["New Unique DT Nomenclature", "month"], how="left")
-customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
-customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
-customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
-customer_monthly["theft_probability"] = (
-    0.15 * customer_monthly["feeder_score"] +
-    0.25 * customer_monthly["dt_score"] +
-    0.15 * customer_monthly["meter_status_score"] +
-    0.15 * customer_monthly["account_type_score"] +
-    0.15 * customer_monthly["customer_account_type_score"] +
-    0.15 * customer_monthly["billing_type_score"] +
-    0.10 * customer_monthly["customer_category_score"] +
-    0.15 * customer_monthly["energy_billed_score"]
-).clip(0, 1)
-
-# Add risk tiers
-customer_monthly["risk_tier"] = pd.cut(
-    customer_monthly["theft_probability"],
-    bins=[0, 0.4, 0.7, 1.0],
-    labels=["Low", "Medium", "High"],
-    include_lowest=True
-)
 
 # Streamlit UI
 st.title("Ikeja Electric Energy Theft Detection Dashboard")
@@ -395,30 +316,15 @@ with col5:
 with col6:
     selected_month = st.selectbox("Select Month", months)
 
-# Feeder-Level Summary
-st.subheader("Feeder-Level Loss Summary")
-feeder_summary = feeder_merged[feeder_merged["month"] == selected_month].merge(band_df[["Feeder", "Short Name", "BAND"]], on="Feeder", how="left")
-if "BAND" not in feeder_summary.columns:
-    st.warning("BAND column missing in feeder_summary after merge. Adding empty BAND column.")
-    feeder_summary["BAND"] = ""
-feeder_summary["BAND"] = feeder_summary["BAND"].fillna("")  # Fallback for missing BAND
-feeder_summary = feeder_summary[feeder_summary["Feeder"].isin(filtered_customer_df["NAME_OF_FEEDER"])]
-if feeder_summary.empty:
-    st.warning("No feeders match the selected filters. Check NAME_OF_FEEDER in Customer Data and Feeder in Feeder Band.")
-else:
-    if "BAND" in feeder_summary.columns and feeder_summary["BAND"].notna().any():
-        feeder_summary = feeder_summary.sort_values("BAND")
-    st.dataframe(feeder_summary[["Short Name", "feeder_energy_lost_kwh", "feeder_financial_loss_naira"]].style.format({"feeder_energy_lost_kwh": "{:,.2f}", "feeder_financial_loss_naira": "₦{:,.2f}"}))
-
-# DT Heatmap
+# DT Heatmap (partial functionality without customer_monthly)
 st.subheader("DT Theft Probability Heatmap")
-dt_pivot = dt_merged[dt_merged["New Unique DT Nomenclature"].isin(filtered_customer_df[filtered_customer_df["NAME_OF_FEEDER"] == selected_feeder]["NAME_OF_DT"].unique()) | dt_merged["Flag"]].pivot_table(index="New Unique DT Nomenclature", columns="month", values="dt_score", aggfunc="mean")
+dt_pivot = dt_agg[dt_agg["New Unique DT Nomenclature"].isin(filtered_customer_df[filtered_customer_df["NAME_OF_FEEDER"] == selected_feeder]["NAME_OF_DT"].unique()) | dt_agg["Flag"]].pivot_table(index="New Unique DT Nomenclature", columns="month", values="total_dt_kwh", aggfunc="mean")
 if not dt_pivot.empty:
     plt.figure(figsize=(10, 8))
-    sns.heatmap(dt_pivot, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "DT Theft Score"})
+    sns.heatmap(dt_pivot, cmap="YlOrRd", cbar_kws={"label": "Total DT kWh (No Theft Score)"})
     plt.xlabel("Month")
     plt.ylabel("DT Name")
-    plt.title(f"DT Theft Scores for Feeder {selected_feeder_short} (January–June 2025)")
+    plt.title(f"DT Energy Consumption for Feeder {selected_feeder_short} (January–June 2025)")
     plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
     st.pyplot(plt.gcf())
@@ -426,91 +332,201 @@ if not dt_pivot.empty:
 else:
     st.warning(f"No DT data available for feeder {selected_feeder_short}. Check NAME_OF_DT in Customer Data.")
 
-# Heatmap Settings
-st.subheader("Customer Heatmap Settings")
-num_customers = st.number_input(
-    "Number of high-risk customers to display (0 for all)",
-    min_value=0,
-    max_value=len(customer_monthly[customer_monthly["NAME_OF_DT"] == selected_dt_name]),
-    value=10,
-    step=1
-)
+# Customer-level analysis (skipped if melt failed)
+if customer_monthly is not None:
+    # Calculate total billed energy per DT per month
+    customer_agg = customer_monthly.groupby(["NAME_OF_DT", "month"])["billed_kwh"].sum().reset_index()
+    customer_agg.rename(columns={"billed_kwh": "total_billed_kwh"}, inplace=True)
 
-# Customer Heatmap
-st.subheader("Theft Analysis")
-st.markdown("**Building Theft Probability Heatmap**")
-filtered_customers = customer_monthly[customer_monthly["NAME_OF_DT"] == selected_dt_name]
-if selected_business_unit != "All":
-    filtered_customers = filtered_customers[filtered_customers["BUSINESS_UNIT"] == selected_business_unit]
-if selected_undertaking != "All":
-    filtered_customers = filtered_customers[filtered_customers["UNDERTAKING"] == selected_undertaking]
-if num_customers > 0:
-    filtered_customers = filtered_customers.sort_values(by="theft_probability", ascending=False).head(num_customers)
-pivot_data = filtered_customers.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean")
-if not pivot_data.empty:
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
-    plt.xlabel("Month")
-    plt.ylabel("Account Number")
-    plt.title(f"Theft Probability for {selected_dt_name} ({selected_feeder_short}, January–June 2025)")
-    plt.xticks(rotation=45, ha="right")
-    plt.tight_layout()
-    st.pyplot(plt.gcf())
-    plt.close()
-else:
-    st.error("No valid data for customer heatmap. Check ACCOUNT_NUMBER and NAME_OF_DT consistency in 'Debug: Merge inputs for customer_monthly'.")
+    # Calculate DT scores
+    dt_merged = dt_agg.merge(customer_agg, left_on=["New Unique DT Nomenclature", "month"], right_on=["NAME_OF_DT", "month"], how="left")
+    dt_merged["total_billed_kwh"] = dt_merged["total_billed_kwh"].fillna(0)
+    dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0, 1)).clip(0, 1)
+    dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_billed_kwh"]
+    dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
 
-# Customer List
-st.subheader(f"Customers under {selected_dt_name} ({selected_feeder_short}, {selected_month})")
-month_customers = filtered_customers[filtered_customers["month"] == selected_month]
-if not month_customers.empty:
-    styled_df = month_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", 
-                                "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", 
-                                "Billing_Type", "feeder_score", "dt_score", "meter_status_score", 
-                                "account_type_score", "customer_account_type_score", "billing_type_score", 
-                                "customer_category_score", "energy_billed_score", "theft_probability", "risk_tier"]].style.format({
-        "billed_kwh": "{:.2f}",
-        "feeder_score": "{:.3f}",
-        "dt_score": "{:.3f}",
-        "meter_status_score": "{:.3f}",
-        "account_type_score": "{:.3f}",
-        "customer_account_type_score": "{:.3f}",
-        "billing_type_score": "{:.3f}",
-        "customer_category_score": "{:.3f}",
-        "energy_billed_score": "{:.3f}",
-        "theft_probability": "{:.3f}"
-    }).highlight_max(subset=["theft_probability"], color="lightcoral")
-    st.dataframe(styled_df)
-else:
-    st.error("No customers found for the selected DT and month. Check NAME_OF_DT in 'Debug: Merge inputs for customer_monthly'.")
+    # Calculate feeder scores
+    feeder_monthly = feeder_df.melt(id_vars=["Feeder"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
+    feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
+    feeder_agg = customer_monthly.groupby(["NAME_OF_FEEDER", "month"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
+    feeder_merged = feeder_monthly.merge(feeder_agg, left_on=["Feeder", "month"], right_on=["NAME_OF_FEEDER", "month"], how="left")
+    feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
+    feeder_merged["feeder_score"] = (1 - feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0, 1)).clip(0, 1)
+    feeder_merged["feeder_energy_lost_kwh"] = feeder_merged["feeder_energy_kwh"] - feeder_merged["total_billed_kwh"]
+    feeder_merged = feeder_merged.merge(band_df[["Feeder", "Short Name", "BAND"]], on="Feeder", how="left")
+    feeder_merged["BAND"] = feeder_merged["BAND"].fillna("")  # Fallback for missing BAND
+    feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost_kwh"] * 209.5
 
-# CSV Export
-st.subheader("Export Customer Data")
-if not month_customers.empty:
-    csv = month_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", 
-                           "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", 
-                           "Billing_Type", "feeder_score", "dt_score", "meter_status_score", 
-                           "account_type_score", "customer_account_type_score", "billing_type_score", 
-                           "customer_category_score", "energy_billed_score", "theft_probability", "risk_tier"]].to_csv(index=False)
-    st.download_button(
-        label=f"Download Customer List ({selected_month})",
-        data=csv,
-        file_name=f"theft_analysis_{selected_dt_name}_{selected_feeder_short}_{selected_month}.csv",
-        mime="text/csv"
+    # Debug: Check merge inputs
+    if st.checkbox("Debug: Merge inputs for customer_monthly"):
+        st.write("customer_monthly NAME_OF_DT unique values:", sorted(customer_monthly["NAME_OF_DT"].dropna().astype(str).unique()))
+        st.write("dt_merged New Unique DT Nomenclature unique values:", sorted(dt_merged["New Unique DT Nomenclature"].dropna().astype(str).unique()))
+        st.write("customer_monthly NAME_OF_FEEDER unique values:", sorted(customer_monthly["NAME_OF_FEEDER"].dropna().astype(str).unique()))
+        st.write("feeder_merged Feeder unique values:", sorted(feeder_merged["Feeder"].dropna().astype(str).unique()))
+        st.write("customer_monthly month unique values:", customer_monthly["month"].unique().tolist())
+        st.write("dt_merged month unique values:", dt_merged["month"].unique().tolist())
+        st.write("feeder_merged BAND values:", feeder_merged["BAND"].dropna().unique().tolist())
+
+    # Debug: Check feeder_summary merge
+    if st.checkbox("Debug: Feeder summary merge"):
+        st.write("feeder_merged[month == 'JUN'] Feeder values:", sorted(feeder_merged[feeder_merged["month"] == "JUN"]["Feeder"].dropna().astype(str).unique()))
+        st.write("band_df Feeder values:", sorted(band_df["Feeder"].dropna().astype(str).unique()))
+
+    # Handle MD-owned DTs
+    dt_no_customers = dt_merged[~dt_merged["New Unique DT Nomenclature"].isin(customer_df["NAME_OF_DT"])]
+    md_customers = dt_no_customers[["New Unique DT Nomenclature", "DT Number", "month", "dt_score", "Flag", "DT_Short_Name"]].copy()
+    md_customers["ACCOUNT_NUMBER"] = md_customers["DT Number"]
+    md_customers["METER_NUMBER"] = md_customers["DT Number"]
+    md_customers["CUSTOMER_NAME"] = md_customers["New Unique DT Nomenclature"]
+    md_customers["ADDRESS"] = "MD-Owned DT"
+    md_customers["billed_kwh"] = 0
+    md_customers["METER_STATUS"] = "Not Metered"
+    md_customers["ACCOUNT_TYPE"] = "Postpaid"
+    md_customers["CUSTOMER_ACCOUNT_TYPE"] = "MD"
+    md_customers["Billing_Type"] = "PPD"
+    md_customers["CUSTOMER_CATEGORY"] = "Special"
+    md_customers["Rate (NGN)"] = 209.5
+    md_customers["NAME_OF_FEEDER"] = "Unknown"
+    md_customers["BUSINESS_UNIT"] = "MD"
+    md_customers["UNDERTAKING"] = "MD"
+    md_customers["theft_probability"] = md_customers["dt_score"]
+    md_customers["meter_status_score"] = 0.9
+    md_customers["account_type_score"] = 0.8
+    md_customers["customer_account_type_score"] = 0.8
+    md_customers["billing_type_score"] = 0.5
+    md_customers["customer_category_score"] = 0.8
+    md_customers["energy_billed_score"] = 0.0
+
+    # Append MD-owned DTs
+    customer_monthly = pd.concat([customer_monthly, md_customers], ignore_index=True)
+
+    # Calculate customer scores
+    customer_monthly = customer_monthly.merge(feeder_merged[["Feeder", "month", "feeder_score"]], left_on=["NAME_OF_FEEDER", "month"], right_on=["Feeder", "month"], how="left")
+    customer_monthly = customer_monthly.merge(dt_merged[["New Unique DT Nomenclature", "month", "dt_score"]], left_on=["NAME_OF_DT", "month"], right_on=["New Unique DT Nomenclature", "month"], how="left")
+    customer_monthly["feeder_score"] = customer_monthly["feeder_score"].fillna(0)
+    customer_monthly["dt_score"] = customer_monthly["dt_score"].fillna(0)
+    customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
+    customer_monthly["theft_probability"] = (
+        0.15 * customer_monthly["feeder_score"] +
+        0.25 * customer_monthly["dt_score"] +
+        0.15 * customer_monthly["meter_status_score"] +
+        0.15 * customer_monthly["account_type_score"] +
+        0.15 * customer_monthly["customer_account_type_score"] +
+        0.15 * customer_monthly["billing_type_score"] +
+        0.10 * customer_monthly["customer_category_score"] +
+        0.15 * customer_monthly["energy_billed_score"]
+    ).clip(0, 1)
+
+    # Add risk tiers
+    customer_monthly["risk_tier"] = pd.cut(
+        customer_monthly["theft_probability"],
+        bins=[0, 0.4, 0.7, 1.0],
+        labels=["Low", "Medium", "High"],
+        include_lowest=True
     )
 
-# Summary Report
-st.subheader("Summary Report")
-filtered_dt = dt_merged[dt_merged["New Unique DT Nomenclature"] == selected_dt_name]
-for month in months:
-    month_data = filtered_dt[filtered_dt["month"] == month]
-    if not month_data.empty:
-        st.write(f"{month} Energy Lost: {month_data['energy_lost_kwh'].sum():,.2f} kWh")
-        st.write(f"{month} Financial Loss: ₦{month_data['financial_loss_naira'].sum():,.2f}")
-avg_energy_lost = filtered_dt["energy_lost_kwh"].mean()
-avg_financial_loss = filtered_dt["financial_loss_naira"].mean()
-st.write(f"Average Monthly Energy Lost: {avg_energy_lost:,.2f} kWh")
-st.write(f"Average Monthly Financial Loss: ₦{avg_financial_loss:,.2f}")
+    # Feeder-Level Summary
+    st.subheader("Feeder-Level Loss Summary")
+    feeder_summary = feeder_merged[feeder_merged["month"] == selected_month].merge(band_df[["Feeder", "Short Name", "BAND"]], on="Feeder", how="left")
+    if "BAND" not in feeder_summary.columns:
+        st.warning("BAND column missing in feeder_summary after merge. Adding empty BAND column.")
+        feeder_summary["BAND"] = ""
+    feeder_summary["BAND"] = feeder_summary["BAND"].fillna("")
+    feeder_summary = feeder_summary[feeder_summary["Feeder"].isin(filtered_customer_df["NAME_OF_FEEDER"])]
+    if feeder_summary.empty:
+        st.warning("No feeders match the selected filters. Check NAME_OF_FEEDER in Customer Data and Feeder in Feeder Band.")
+    else:
+        if "BAND" in feeder_summary.columns and feeder_summary["BAND"].notna().any():
+            feeder_summary = feeder_summary.sort_values("BAND")
+        st.dataframe(feeder_summary[["Short Name", "feeder_energy_lost_kwh", "feeder_financial_loss_naira"]].style.format({"feeder_energy_lost_kwh": "{:,.2f}", "feeder_financial_loss_naira": "₦{:,.2f}"}))
+
+    # Customer Heatmap Settings
+    st.subheader("Customer Heatmap Settings")
+    num_customers = st.number_input(
+        "Number of high-risk customers to display (0 for all)",
+        min_value=0,
+        max_value=len(customer_monthly[customer_monthly["NAME_OF_DT"] == selected_dt_name]),
+        value=10,
+        step=1
+    )
+
+    # Customer Heatmap
+    st.subheader("Theft Analysis")
+    st.markdown("**Building Theft Probability Heatmap**")
+    filtered_customers = customer_monthly[customer_monthly["NAME_OF_DT"] == selected_dt_name]
+    if selected_business_unit != "All":
+        filtered_customers = filtered_customers[filtered_customers["BUSINESS_UNIT"] == selected_business_unit]
+    if selected_undertaking != "All":
+        filtered_customers = filtered_customers[filtered_customers["UNDERTAKING"] == selected_undertaking]
+    if num_customers > 0:
+        filtered_customers = filtered_customers.sort_values(by="theft_probability", ascending=False).head(num_customers)
+    pivot_data = filtered_customers.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean")
+    if not pivot_data.empty:
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
+        plt.xlabel("Month")
+        plt.ylabel("Account Number")
+        plt.title(f"Theft Probability for {selected_dt_name} ({selected_feeder_short}, January–June 2025)")
+        plt.xticks(rotation=45, ha="right")
+        plt.tight_layout()
+        st.pyplot(plt.gcf())
+        plt.close()
+    else:
+        st.error("No valid data for customer heatmap. Check ACCOUNT_NUMBER and NAME_OF_DT consistency.")
+
+    # Customer List
+    st.subheader(f"Customers under {selected_dt_name} ({selected_feeder_short}, {selected_month})")
+    month_customers = filtered_customers[filtered_customers["month"] == selected_month]
+    if not month_customers.empty:
+        styled_df = month_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", 
+                                    "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", 
+                                    "Billing_Type", "feeder_score", "dt_score", "meter_status_score", 
+                                    "account_type_score", "customer_account_type_score", "billing_type_score", 
+                                    "customer_category_score", "energy_billed_score", "theft_probability", "risk_tier"]].style.format({
+            "billed_kwh": "{:.2f}",
+            "feeder_score": "{:.3f}",
+            "dt_score": "{:.3f}",
+            "meter_status_score": "{:.3f}",
+            "account_type_score": "{:.3f}",
+            "customer_account_type_score": "{:.3f}",
+            "billing_type_score": "{:.3f}",
+            "customer_category_score": "{:.3f}",
+            "energy_billed_score": "{:.3f}",
+            "theft_probability": "{:.3f}"
+        }).highlight_max(subset=["theft_probability"], color="lightcoral")
+        st.dataframe(styled_df)
+    else:
+        st.error("No customers found for the selected DT and month.")
+
+    # CSV Export
+    st.subheader("Export Customer Data")
+    if not month_customers.empty:
+        csv = month_customers[["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", 
+                               "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", 
+                               "Billing_Type", "feeder_score", "dt_score", "meter_status_score", 
+                               "account_type_score", "customer_account_type_score", "billing_type_score", 
+                               "customer_category_score", "energy_billed_score", "theft_probability", "risk_tier"]].to_csv(index=False)
+        st.download_button(
+            label=f"Download Customer List ({selected_month})",
+            data=csv,
+            file_name=f"theft_analysis_{selected_dt_name}_{selected_feeder_short}_{selected_month}.csv",
+            mime="text/csv"
+        )
+
+    # Summary Report
+    st.subheader("Summary Report")
+    filtered_dt = dt_merged[dt_merged["New Unique DT Nomenclature"] == selected_dt_name]
+    for month in months:
+        month_data = filtered_dt[filtered_dt["month"] == month]
+        if not month_data.empty:
+            st.write(f"{month} Energy Lost: {month_data['energy_lost_kwh'].sum():,.2f} kWh")
+            st.write(f"{month} Financial Loss: ₦{month_data['financial_loss_naira'].sum():,.2f}")
+    avg_energy_lost = filtered_dt["energy_lost_kwh"].mean()
+    avg_financial_loss = filtered_dt["financial_loss_naira"].mean()
+    st.write(f"Average Monthly Energy Lost: {avg_energy_lost:,.2f} kWh")
+    st.write(f"Average Monthly Financial Loss: ₦{avg_financial_loss:,.2f}")
+else:
+    st.warning("Customer-level analysis (Customer Heatmap, Customer List, Feeder-Level Loss Summary, Summary Report) skipped due to melt error. Feeder and DT lookup are available.")
 
 # Unbilled Energy Accuracy
 st.subheader("Unbilled Energy Accuracy Check")
