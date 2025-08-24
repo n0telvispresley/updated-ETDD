@@ -51,14 +51,34 @@ if feeder_df is None or dt_df is None or ppm_df is None or ppd_df is None or ban
     st.error("One or more sheets (Feeder Data, Transformer Data, Customer Data_PPM, Customer Data_PPD, Feeder Band, Customer Tariffs) not found.")
     st.stop()
 
+# Validate column names
+for df, name in [(ppm_df, "Customer Data_PPM"), (ppd_df, "Customer Data_PPD")]:
+    if "NAME_OF_DT" not in df.columns:
+        st.error(f"Column 'NAME_OF_DT' not found in {name}. Available columns: {df.columns.tolist()}")
+        st.stop()
+    if "NAME_OF_FEEDER" not in df.columns:
+        st.error(f"Column 'NAME_OF_FEEDER' not found in {name}. Available columns: {df.columns.tolist()}")
+        st.stop()
+
 # Combine PPM and PPD into customer_df
 ppm_df["Billing_Type"] = "PPM"
 ppd_df["Billing_Type"] = "PPD"
 customer_df = pd.concat([ppm_df, ppd_df], ignore_index=True)
 
+# Check if customer_df is empty
+if customer_df.empty:
+    st.error("customer_df is empty. Check if Customer Data_PPM and Customer Data_PPD have valid data.")
+    st.write("PPM rows:", len(ppm_df))
+    st.write("PPD rows:", len(ppd_df))
+    st.stop()
+
 # Debug: Show sheet names and column info
 if st.checkbox("Show debug info"):
     st.write("Available sheets:", list(sheets.keys()))
+    st.write("Customer Data_PPM rows:", len(ppm_df))
+    st.write("Customer Data_PPM columns:", ppm_df.columns.tolist())
+    st.write("Customer Data_PPD rows:", len(ppd_df))
+    st.write("Customer Data_PPD columns:", ppd_df.columns.tolist())
     st.write("Customer columns:", customer_df.columns.tolist())
     st.write("Sample ACCOUNT_NUMBER values:", customer_df["ACCOUNT_NUMBER"].head().tolist())
     st.write("Count of empty ACCOUNT_NUMBER:", (customer_df["ACCOUNT_NUMBER"] == "").sum())
@@ -66,8 +86,8 @@ if st.checkbox("Show debug info"):
     st.write("Count of empty METER_NUMBER:", (customer_df["METER_NUMBER"] == "").sum())
     st.write("Sample NAME_OF_DT values:", customer_df["NAME_OF_DT"].head().tolist())
     st.write("Sample NAME_OF_FEEDER values:", customer_df["NAME_OF_FEEDER"].head().tolist())
-    st.write("Unique NAME_OF_DT values:", sorted(customer_df["NAME_OF_DT"].unique()))
-    st.write("Unique NAME_OF_FEEDER values:", sorted(customer_df["NAME_OF_FEEDER"].unique()))
+    st.write("Unique NAME_OF_DT values:", sorted(customer_df["NAME_OF_DT"].dropna().astype(str).unique()))
+    st.write("Unique NAME_OF_FEEDER values:", sorted(customer_df["NAME_OF_FEEDER"].dropna().astype(str).unique()))
     st.write("Transformer JAN-JUN dtypes:", dt_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].dtypes)
     st.write("Sample Transformer JAN-JUN values:", dt_df[["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]].head().to_dict())
     st.write("Sample Transformer New Unique DT Nomenclature:", dt_df["New Unique DT Nomenclature"].head().tolist())
@@ -121,13 +141,9 @@ customer_df["customer_account_type_score"] = np.where(customer_df["CUSTOMER_ACCO
 customer_df["billing_type_score"] = np.where(customer_df["Billing_Type"] == "PPD", 0.5, 0.2)
 customer_df["customer_category_score"] = customer_df["CUSTOMER_CATEGORY"].map({"Residential": 0.2, "Commercial": 0.5, "Special": 0.8}).fillna(0.2)
 
-# Calculate total DT consumption per feeder per month
+# Calculate total DT consumption per DT per month
 dt_agg = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT Number", "Flag"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
 dt_agg["month"] = dt_agg["month"].str.replace(" (kWh)", "")
-
-# Calculate feeder scores
-feeder_monthly = feeder_df.melt(id_vars=["Feeder"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
-feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
 
 # Calculate total billed energy per DT per month
 customer_monthly = customer_df.melt(id_vars=["NAME_OF_DT", "ACCOUNT_NUMBER", "Rate (₦)", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "Billing_Type", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="billed_kwh")
@@ -143,6 +159,8 @@ dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_bill
 dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * 209.5
 
 # Calculate feeder scores using customer_df's NAME_OF_FEEDER
+feeder_monthly = feeder_df.melt(id_vars=["Feeder"], value_vars=[m + " (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
+feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
 feeder_agg = customer_monthly.groupby(["NAME_OF_FEEDER", "month"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
 feeder_merged = feeder_monthly.merge(feeder_agg, left_on=["Feeder", "month"], right_on=["NAME_OF_FEEDER", "month"], how="left")
 feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
@@ -153,10 +171,10 @@ feeder_merged["feeder_financial_loss_naira"] = feeder_merged["feeder_energy_lost
 
 # Debug: Check merge inputs
 if st.checkbox("Debug: Merge inputs for customer_monthly"):
-    st.write("customer_monthly NAME_OF_DT unique values:", sorted(customer_monthly["NAME_OF_DT"].unique()))
-    st.write("dt_merged New Unique DT Nomenclature unique values:", sorted(dt_merged["New Unique DT Nomenclature"].unique()))
-    st.write("customer_monthly NAME_OF_FEEDER unique values:", sorted(customer_monthly["NAME_OF_FEEDER"].unique()))
-    st.write("feeder_merged Feeder unique values:", sorted(feeder_merged["Feeder"].unique()))
+    st.write("customer_monthly NAME_OF_DT unique values:", sorted(customer_monthly["NAME_OF_DT"].dropna().astype(str).unique()))
+    st.write("dt_merged New Unique DT Nomenclature unique values:", sorted(dt_merged["New Unique DT Nomenclature"].dropna().astype(str).unique()))
+    st.write("customer_monthly NAME_OF_FEEDER unique values:", sorted(customer_monthly["NAME_OF_FEEDER"].dropna().astype(str).unique()))
+    st.write("feeder_merged Feeder unique values:", sorted(feeder_merged["Feeder"].dropna().astype(str).unique()))
     st.write("customer_monthly month unique values:", customer_monthly["month"].unique().tolist())
     st.write("dt_merged month unique values:", dt_merged["month"].unique().tolist())
 
@@ -223,13 +241,13 @@ st.markdown("Detect high-risk buildings and MD-owned DTs using multi-month data 
 st.subheader("Filters")
 col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
-    business_unit_options = ["All"] + sorted(customer_df["BUSINESS_UNIT"].unique())
+    business_unit_options = ["All"] + sorted(customer_df["BUSINESS_UNIT"].dropna().astype(str).unique())
     selected_business_unit = st.selectbox("Select Business Unit", business_unit_options)
 with col2:
-    undertaking_options = ["All"] + sorted(customer_df["UNDERTAKING"].unique())
+    undertaking_options = ["All"] + sorted(customer_df["UNDERTAKING"].dropna().astype(str).unique())
     selected_undertaking = st.selectbox("Select Undertaking", undertaking_options)
 with col3:
-    band_options = ["All"] + sorted(band_df["BAND"].unique())
+    band_options = ["All"] + sorted(band_df["BAND"].dropna().astype(str).unique())
     selected_band = st.selectbox("Select Band", band_options)
 
 # Apply Business Unit and Undertaking filters first
@@ -242,17 +260,17 @@ filtered_dt_df = dt_df[dt_df["New Unique DT Nomenclature"].isin(filtered_custome
 
 with col4:
     if selected_band == "All":
-        feeder_options = band_df[band_df["Feeder"].isin(filtered_customer_df["NAME_OF_FEEDER"])].sort_values("BAND")["Short Name"].tolist()
+        feeder_options = band_df[band_df["Feeder"].isin(filtered_customer_df["NAME_OF_FEEDER"])].sort_values("BAND")["Short Name"].dropna().astype(str).tolist()
     else:
-        feeder_options = band_df[(band_df["BAND"] == selected_band) & (band_df["Feeder"].isin(filtered_customer_df["NAME_OF_FEEDER"]))].sort_values("BAND")["Short Name"].tolist()
+        feeder_options = band_df[(band_df["BAND"] == selected_band) & (band_df["Feeder"].isin(filtered_customer_df["NAME_OF_FEEDER"]))].sort_values("BAND")["Short Name"].dropna().astype(str).tolist()
     if not feeder_options:
         st.error("No feeders available for the selected band, business unit, or undertaking.")
         st.stop()
     selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
     selected_feeder = band_df[band_df["Short Name"] == selected_feeder_short]["Feeder"].iloc[0] if selected_feeder_short else None
 with col5:
-    dt_options = filtered_customer_df[filtered_customer_df["NAME_OF_FEEDER"] == selected_feeder]["NAME_OF_DT"].unique().tolist()
-    dt_options += [dt for dt in filtered_dt_df[filtered_dt_df["Flag"]]["New Unique DT Nomenclature"].tolist() if dt not in dt_options]
+    dt_options = filtered_customer_df[filtered_customer_df["NAME_OF_FEEDER"] == selected_feeder]["NAME_OF_DT"].dropna().astype(str).unique().tolist()
+    dt_options += [dt for dt in filtered_dt_df[filtered_dt_df["Flag"]]["New Unique DT Nomenclature"].dropna().astype(str).tolist() if dt not in dt_options]
     dt_options = sorted(dt_options)
     if not dt_options:
         st.error(f"No DTs available for feeder {selected_feeder_short}. Check NAME_OF_FEEDER in Customer Data.")
