@@ -46,7 +46,7 @@ try:
         sheet_name=None,
         converters={
             "Feeder Data": {"Feeder": preserve_exact_string},
-            "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "Ownership": preserve_exact_string},
+            "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "Ownership": preserve_exact_string, "Connection Status": preserve_exact_string},
             "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
             "Customer Data_PPD": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string, "CUSTOMER_CATEGORY": preserve_exact_string, "METER_STATUS": preserve_exact_string, "ACCOUNT_TYPE": preserve_exact_string, "CUSTOMER_ACCOUNT_TYPE": preserve_exact_string},
             "Feeder Band": {"BAND": preserve_exact_string, "Feeder": preserve_exact_string, "Short Name": preserve_exact_string},
@@ -72,7 +72,7 @@ if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_d
 
 # Validate column names
 required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "METER_STATUS", "ACCOUNT_TYPE", "CUSTOMER_ACCOUNT_TYPE", "CUSTOMER_CATEGORY", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING", "TARIFF"]
-required_dt_cols = ["New Unique DT Nomenclature", "Ownership"]
+required_dt_cols = ["New Unique DT Nomenclature", "Ownership", "Connection Status"]
 required_feeder_cols = ["Feeder"]
 required_band_cols = ["Feeder", "BAND"]
 required_tariff_cols = ["Tariff"]
@@ -137,17 +137,7 @@ feeder_df["Tariff_Rate"] = feeder_df["BAND"].map(band_rates).fillna(209.5)
 if feeder_df["BAND"].str.contains("Unknown").any():
     st.warning("Some feeders not mapped to bands. Using default tariff rate (209.5 NGN/kWh).")
 
-# Normalize names
-for col, df in [
-    ("Feeder", feeder_df), ("NAME_OF_FEEDER", ppm_df), ("NAME_OF_FEEDER", ppd_df), ("Feeder", band_df),
-    ("NAME_OF_DT", ppm_df), ("NAME_OF_DT", ppd_df), ("New Unique DT Nomenclature", dt_df),
-    ("TARIFF", ppm_df), ("TARIFF", ppd_df), ("Tariff", tariff_df),
-    ("BUSINESS_UNIT", ppm_df), ("BUSINESS_UNIT", ppd_df),
-    ("UNDERTAKING", ppm_df), ("UNDERTAKING", ppd_df)
-]:
-    df[col] = df[col].apply(normalize_name)
-
-# Data preprocessing (moved before debug)
+# Data preprocessing
 for month in months:
     for df, unit in [(feeder_df, 1000), (ppm_df, 1), (ppd_df, 1)]:
         col = f"{month} (kWh)"
@@ -161,6 +151,24 @@ for month in months:
         dt_df[f"{month} (kWh)"] = 0
 for df in [feeder_df, dt_df, ppm_df, ppd_df]:
     df.drop(columns=months, errors="ignore", inplace=True)
+
+# Filter NOT CONNECTED DTs with zero energy
+dt_df["total_energy_kwh"] = dt_df[[f"{m} (kWh)" for m in months]].sum(axis=1)
+not_connected_zero = (dt_df["Connection Status"].str.strip().str.upper() == "NOT CONNECTED") & (dt_df["total_energy_kwh"] == 0)
+excluded_dts = dt_df[not_connected_zero][["New Unique DT Nomenclature", "Connection Status", "total_energy_kwh"]]
+if not excluded_dts.empty:
+    st.warning(f"Excluding {len(excluded_dts)} DTs marked 'NOT CONNECTED' with zero energy across all months.")
+dt_df = dt_df[~not_connected_zero]
+
+# Normalize names
+for col, df in [
+    ("Feeder", feeder_df), ("NAME_OF_FEEDER", ppm_df), ("NAME_OF_FEEDER", ppd_df), ("Feeder", band_df),
+    ("NAME_OF_DT", ppm_df), ("NAME_OF_DT", ppd_df), ("New Unique DT Nomenclature", dt_df),
+    ("TARIFF", ppm_df), ("TARIFF", ppd_df), ("Tariff", tariff_df),
+    ("BUSINESS_UNIT", ppm_df), ("BUSINESS_UNIT", ppd_df),
+    ("UNDERTAKING", ppm_df), ("UNDERTAKING", ppd_df)
+]:
+    df[col] = df[col].apply(normalize_name)
 
 # Combine PPM and PPD
 ppm_df["Billing_Type"] = "PPM"
@@ -317,6 +325,7 @@ if st.checkbox("Debug: Data"):
     st.write("Valid Feeders (Feeder Data):", sorted(feeder_df["Feeder"].unique()))
     st.write("Valid DTs (Transformer Data):", sorted(dt_df["New Unique DT Nomenclature"].unique()))
     st.write("dt_df Ownership:", dt_df["Ownership"].unique().tolist())
+    st.write("dt_df Connection Status:", dt_df["Connection Status"].unique().tolist())
     st.write("dt_df Columns:", dt_df.columns.tolist())
     st.write("customer_df Columns:", customer_df.columns.tolist())
     st.write("dt_agg_monthly Columns:", dt_agg_monthly.columns.tolist() if 'dt_agg_monthly' in locals() else "dt_agg_monthly not created yet")
@@ -333,11 +342,14 @@ if st.checkbox("Debug: Data"):
     st.write("DT Energy Sample (kWh):", dt_df[[f"{m} (kWh)" for m in months]].head())
     st.write("PPM Energy Sample (kWh):", ppm_df[[f"{m} (kWh)" for m in months]].head())
     st.write("PPD Energy Sample (kWh):", ppd_df[[f"{m} (kWh)" for m in months]].head())
+    st.write("Excluded NOT CONNECTED DTs (Zero Energy):", excluded_dts[["New Unique DT Nomenclature", "Connection Status", "total_energy_kwh"]])
     if selected_dt_short:
         selected_dt_full = dt_df[dt_df["DT_Short_Name"] == selected_dt_short]["New Unique DT Nomenclature"].iloc[0] if not dt_df[dt_df["DT_Short_Name"] == selected_dt_short].empty else "Not found"
         dt_customers = customer_df[customer_df["DT_Short_Name"] == selected_dt_short][["ACCOUNT_NUMBER", "NAME_OF_DT"] + [f"{m} (kWh)" for m in months]] if not customer_df[customer_df["DT_Short_Name"] == selected_dt_short].empty else pd.DataFrame()
         st.write(f"Customers for {selected_dt_short}:", dt_customers if not dt_customers.empty else "No customers found")
         st.write(f"DT Ownership for {selected_dt_short}:", dt_df[dt_df["DT_Short_Name"] == selected_dt_short]["Ownership"].iloc[0] if not dt_df[dt_df["DT_Short_Name"] == selected_dt_short].empty else "Not found")
+        st.write(f"DT Connection Status for {selected_dt_short}:", dt_df[dt_df["DT_Short_Name"] == selected_dt_short]["Connection Status"].iloc[0] if not dt_df[dt_df["DT_Short_Name"] == selected_dt_short].empty else "Not found")
+        st.write(f"DT Total Energy (kWh) for {selected_dt_short}:", dt_df[dt_df["DT_Short_Name"] == selected_dt_short]["total_energy_kwh"].iloc[0] if not dt_df[dt_df["DT_Short_Name"] == selected_dt_short].empty else "Not found")
         if 'customer_billed_monthly' in locals() and selected_dt_full != "Not found":
             st.write(f"Customer Billed kWh for {selected_dt_short} ({selected_dt_full}):", 
                      customer_billed_monthly[customer_billed_monthly["NAME_OF_DT"] == selected_dt_full][["month", "customer_billed_kwh"]])
@@ -386,7 +398,7 @@ except Exception as e:
 
 # DT consumption (per month for heatmap)
 try:
-    dt_agg_monthly = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
+    dt_agg_monthly = dt_df.melt(id_vars=["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership", "Connection Status", "total_energy_kwh"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="total_dt_kwh")
     dt_agg_monthly["month"] = dt_agg_monthly["month"].str.replace(" (kWh)", "")
     dt_agg_monthly["month"] = pd.Categorical(dt_agg_monthly["month"], categories=months, ordered=True)
 except Exception as e:
@@ -419,7 +431,7 @@ except Exception as e:
 
 # Aggregate DT data over month range
 try:
-    dt_agg_sum = dt_agg_monthly.groupby(["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership"])["total_dt_kwh"].sum().reset_index()
+    dt_agg_sum = dt_agg_monthly.groupby(["New Unique DT Nomenclature", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership", "Connection Status", "total_energy_kwh"])["total_dt_kwh"].sum().reset_index()
 except Exception as e:
     st.error(f"DT aggregation failed: {e}")
     st.write("dt_agg_monthly:", dt_agg_monthly.head())
@@ -434,7 +446,11 @@ try:
         dt_merged["total_dt_kwh"],
         dt_merged["customer_billed_kwh"]
     )
-    dt_merged["dt_score"] = (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0, 1)).clip(0, 1)
+    dt_merged["dt_score"] = np.where(
+        (dt_merged["Connection Status"].str.strip().str.upper() == "NOT CONNECTED") & (dt_merged["total_energy_kwh"] > 0),
+        0.95,
+        (1 - dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0, 1)).clip(0, 1)
+    )
     dt_merged["energy_lost_kwh"] = dt_merged["total_dt_kwh"] - dt_merged["total_billed_kwh"]
     dt_merged["financial_loss_naira"] = dt_merged["energy_lost_kwh"] * dt_merged["Tariff_Rate"]
 except Exception as e:
@@ -456,7 +472,11 @@ try:
         dt_merged_monthly["total_dt_kwh"],
         dt_merged_monthly["customer_billed_kwh"]
     )
-    dt_merged_monthly["dt_score"] = (1 - dt_merged_monthly["total_billed_kwh"] / dt_merged_monthly["total_dt_kwh"].replace(0, 1)).clip(0, 1)
+    dt_merged_monthly["dt_score"] = np.where(
+        (dt_merged_monthly["Connection Status"].str.strip().str.upper() == "NOT CONNECTED") & (dt_merged_monthly["total_energy_kwh"] > 0),
+        0.95,
+        (1 - dt_merged_monthly["total_billed_kwh"] / dt_merged_monthly["total_dt_kwh"].replace(0, 1)).clip(0, 1)
+    )
     if "month" not in dt_merged_monthly.columns:
         st.error("month column missing in dt_merged_monthly")
         st.write("dt_merged_monthly Columns:", dt_merged_monthly.columns.tolist())
@@ -533,17 +553,19 @@ try:
         "total_dt_kwh": "sum",
         "total_billed_kwh": "sum",
         "energy_lost_kwh": "sum",
-        "financial_loss_naira": "sum"
+        "financial_loss_naira": "sum",
+        "dt_score": "mean"
     }).reset_index()
     dt_summary["Period"] = period_label
-    dt_summary.columns = ["DT", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)", "Period"]
-    dt_summary = dt_summary[["DT", "Period", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)"]]
+    dt_summary.columns = ["DT", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)", "DT Theft Score", "Period"]
+    dt_summary = dt_summary[["DT", "Period", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)", "DT Theft Score"]]
     if not dt_summary.empty:
         st.dataframe(dt_summary.style.format({
             "Energy Supplied (kWh)": "{:.2f}",
             "Energy Billed (kWh)": "{:.2f}",
             "Energy Unaccounted For (kWh)": "{:.2f}",
-            "Financial Loss (NGN)": "{:.2f}"
+            "Financial Loss (NGN)": "{:.2f}",
+            "DT Theft Score": "{:.3f}"
         }))
     else:
         st.warning(f"No DT summary data for {selected_feeder_short}.")
@@ -568,7 +590,7 @@ try:
     dt_pivot = filtered_dt_agg.pivot_table(index="DT_Short_Name", columns="month", values="dt_score", aggfunc="mean").reindex(columns=months)
     if not dt_pivot.empty:
         plt.figure(figsize=(10, 8))
-        sns.heatmap(dt_pivot, cmap="YlOrRd", cbar_kws={"label": "DT Theft Score"})
+        sns.heatmap(dt_pivot, cmap="YlOrRd", cbar_kws={"label": "DT Theft Score"}, vmin=0, vmax=1)
         plt.title(f"DT Theft Score for {selected_feeder_short} ({period_label})")
         st.pyplot(plt.gcf())
         plt.close()
