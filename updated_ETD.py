@@ -1,4 +1,3 @@
-```python
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -79,11 +78,13 @@ def calculate_dt_relative_usage(customer_monthly, selected_months):
     # Calculate average billed_kwh per DT
     dt_avg = customer_agg.groupby("NAME_OF_DT")["billed_kwh"].mean().reset_index().rename(columns={"billed_kwh": "dt_avg_kwh"})
     customer_agg = customer_agg.merge(dt_avg, on="NAME_OF_DT", how="left")
+    # Avoid division by zero in interpolation
+    customer_agg["relative_ratio"] = np.where(customer_agg["dt_avg_kwh"] == 0, 0.5, customer_agg["billed_kwh"] / customer_agg["dt_avg_kwh"])
     # Calculate dt_relative_usage_score
     customer_agg["dt_relative_usage_score"] = customer_agg.apply(
         lambda row: 0.9 if row["billed_kwh"] < row["dt_avg_kwh"] * 0.3
         else 0.1 if row["billed_kwh"] > row["dt_avg_kwh"] * 0.7
-        else 0.1 + (0.9 - 0.1) * (0.7 - row["billed_kwh"] / row["dt_avg_kwh"]) / (0.7 - 0.3),
+        else 0.1 + (0.9 - 0.1) * (0.7 - row["relative_ratio"]) / (0.7 - 0.3),
         axis=1
     ).clip(0, 1)
     return customer_agg[["ACCOUNT_NUMBER", "dt_relative_usage_score"]]
@@ -296,11 +297,17 @@ customer_df = customer_df.drop(columns=["Tariff"], errors="ignore")
 # Calculate location trust scores from Escalations
 escalations_df["Report_Count"] = 1  # Each row is one report
 feeder_escalations = escalations_df.groupby("Feeder")["Report_Count"].sum().reset_index()
-feeder_escalations["location_trust_score"] = feeder_escalations["Report_Count"] / feeder_escalations["Report_Count"].max()
+if not feeder_escalations["Report_Count"].empty:
+    feeder_escalations["location_trust_score"] = feeder_escalations["Report_Count"] / feeder_escalations["Report_Count"].max()
+else:
+    feeder_escalations["location_trust_score"] = 0
 feeder_escalations["location_trust_score"] = feeder_escalations["location_trust_score"].fillna(0).clip(0, 1)
 
 dt_escalations = escalations_df.groupby("DT Nomenclature")["Report_Count"].sum().reset_index()
-dt_escalations["location_trust_score"] = dt_escalations["Report_Count"] / dt_escalations["Report_Count"].max()
+if not dt_escalations["Report_Count"].empty:
+    dt_escalations["location_trust_score"] = dt_escalations["Report_Count"] / dt_escalations["Report_Count"].max()
+else:
+    dt_escalations["location_trust_score"] = 0
 dt_escalations["location_trust_score"] = dt_escalations["location_trust_score"].fillna(0).clip(0, 1)
 
 # Streamlit UI: Filters
@@ -309,26 +316,50 @@ st.subheader("Filters")
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 with col1:
     bu_options = sorted(customer_df["BUSINESS_UNIT"].unique())
-    selected_bu = st.selectbox("Select Business Unit", bu_options)
+    if bu_options:
+        selected_bu = st.selectbox("Select Business Unit", bu_options)
+    else:
+        selected_bu = ""
+        st.warning("No Business Units available.")
 with col2:
-    customer_df_bu = customer_df[customer_df["BUSINESS_UNIT"] == selected_bu]
-    ut_options = sorted(customer_df_bu["UNDERTAKING"].unique())
-    selected_ut = st.selectbox("Select Undertaking", ut_options)
+    if selected_bu:
+        customer_df_bu = customer_df[customer_df["BUSINESS_UNIT"] == selected_bu]
+        ut_options = sorted(customer_df_bu["UNDERTAKING"].unique())
+        if ut_options:
+            selected_ut = st.selectbox("Select Undertaking", ut_options)
+        else:
+            selected_ut = ""
+            st.warning("No Undertakings available for selected BU.")
+    else:
+        customer_df_bu = pd.DataFrame()
+        selected_ut = ""
 with col3:
-    customer_df_ut = customer_df_bu[customer_df_bu["UNDERTAKING"] == selected_ut]
-    feeder_options = sorted(feeder_df["Feeder_Short"].unique())
-    if not feeder_options:
-        st.error("No feeders available in Feeder Data.")
-        st.stop()
-    selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
+    if selected_ut:
+        customer_df_ut = customer_df_bu[customer_df_bu["UNDERTAKING"] == selected_ut]
+        feeder_options = sorted(feeder_df["Feeder_Short"].unique())
+        if feeder_options:
+            selected_feeder_short = st.selectbox("Select Feeder", feeder_options)
+        else:
+            selected_feeder_short = ""
+            st.error("No feeders available in Feeder Data.")
+            st.stop()
+    else:
+        customer_df_ut = pd.DataFrame()
+        selected_feeder_short = ""
 with col4:
-    selected_feeder = feeder_df[feeder_df["Feeder_Short"] == selected_feeder_short]["Feeder"].iloc[0]
-    dt_df_filtered = dt_df[dt_df["Feeder"] == selected_feeder]
-    dt_options = sorted(dt_df_filtered["DT_Short_Name"].unique())
-    if not dt_options:
-        st.error(f"No DTs available for feeder {selected_feeder_short}.")
-        st.stop()
-    selected_dt_short = st.selectbox("Select DT", dt_options)
+    if selected_feeder_short:
+        selected_feeder = feeder_df[feeder_df["Feeder_Short"] == selected_feeder_short]["Feeder"].iloc[0]
+        dt_df_filtered = dt_df[dt_df["Feeder"] == selected_feeder]
+        dt_options = sorted(dt_df_filtered["DT_Short_Name"].unique())
+        if dt_options:
+            selected_dt_short = st.selectbox("Select DT", dt_options)
+        else:
+            selected_dt_short = ""
+            st.error(f"No DTs available for feeder {selected_feeder_short}.")
+            st.stop()
+    else:
+        selected_feeder = ""
+        selected_dt_short = ""
 with col5:
     start_month = st.selectbox("Start Month", months)
 with col6:
@@ -360,8 +391,13 @@ w_location /= total_weight
 w_pattern /= total_weight
 w_relative /= total_weight
 
-# Filter data by BU and UT
-customer_df = customer_df_ut
+# Filter data by BU and UT (ensure customer_df_ut is defined)
+if 'customer_df_ut' not in locals() or customer_df_ut.empty:
+    st.warning("No filtered customer data available. Using full dataset.")
+    customer_df_filtered = customer_df
+else:
+    customer_df_filtered = customer_df_ut
+customer_df = customer_df_filtered
 dt_df = dt_df[dt_df["Feeder"].isin(valid_feeders)]
 if dt_df.empty or customer_df.empty:
     st.error("No valid data after BU/UT filtering.")
@@ -533,8 +569,11 @@ if st.button("Show Feeder Summary"):
 
 # DT Summary Table
 st.subheader(f"DT Summary for {selected_feeder_short}")
-if st.button("Show DT Summary"):
+if selected_feeder_short and st.button("Show DT Summary"):
     try:
+        if not selected_feeder:
+            st.error("Selected feeder not found.")
+            st.stop()
         dt_summary = dt_merged[dt_merged["Feeder"] == selected_feeder].groupby(["DT_Short_Name"]).agg({
             "total_dt_kwh": "sum",
             "total_billed_kwh": "sum",
@@ -560,31 +599,37 @@ if st.button("Show DT Summary"):
 
 # DT Theft Probability Heatmap
 st.subheader("DT Theft Probability Heatmap")
-try:
-    filtered_dt_agg = dt_merged_monthly[dt_merged_monthly["Feeder"] == selected_feeder]
-    # Calculate average theft probability for sorting
-    dt_theft_scores = filtered_dt_agg.groupby("DT_Short_Name")["dt_billing_efficiency"].mean().reset_index()
-    dt_theft_scores["theft_probability"] = 1 - dt_theft_scores["dt_billing_efficiency"]
-    dt_order = dt_theft_scores.sort_values("theft_probability", ascending=False)["DT_Short_Name"].tolist()
-    if filtered_dt_agg.empty:
-        st.error(f"No DT data for feeder {selected_feeder_short}.")
+if selected_feeder:
+    try:
+        filtered_dt_agg = dt_merged_monthly[dt_merged_monthly["Feeder"] == selected_feeder]
+        # Calculate average theft probability for sorting
+        dt_theft_scores = filtered_dt_agg.groupby("DT_Short_Name")["dt_billing_efficiency"].mean().reset_index()
+        dt_theft_scores["theft_probability"] = 1 - dt_theft_scores["dt_billing_efficiency"]
+        dt_order = dt_theft_scores.sort_values("theft_probability", ascending=False)["DT_Short_Name"].tolist()
+        if filtered_dt_agg.empty:
+            st.error(f"No DT data for feeder {selected_feeder_short}.")
+            st.stop()
+        dt_pivot = filtered_dt_agg.pivot_table(index="DT_Short_Name", columns="month", values="dt_billing_efficiency", aggfunc="mean").reindex(index=dt_order, columns=months)
+        if not dt_pivot.empty:
+            plt.figure(figsize=(10, 8))
+            sns.heatmap(1 - dt_pivot, cmap="YlOrRd", cbar_kws={"label": "DT Theft Probability"}, vmin=0, vmax=1)
+            plt.title(f"DT Theft Probability for {selected_feeder_short} ({period_label}) (Ranked by Theft Probability)")
+            st.pyplot(plt.gcf())
+            plt.close()
+        else:
+            st.error(f"No DT data for {selected_feeder_short} after pivoting.")
+            st.stop()
+    except Exception as e:
+        st.error(f"DT heatmap failed: {e}")
         st.stop()
-    dt_pivot = filtered_dt_agg.pivot_table(index="DT_Short_Name", columns="month", values="dt_billing_efficiency", aggfunc="mean").reindex(index=dt_order, columns=months)
-    if not dt_pivot.empty:
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(1 - dt_pivot, cmap="YlOrRd", cbar_kws={"label": "DT Theft Probability"}, vmin=0, vmax=1)
-        plt.title(f"DT Theft Probability for {selected_feeder_short} ({period_label}) (Ranked by Theft Probability)")
-        st.pyplot(plt.gcf())
-        plt.close()
-    else:
-        st.error(f"No DT data for {selected_feeder_short} after pivoting.")
-        st.stop()
-except Exception as e:
-    st.error(f"DT heatmap failed: {e}")
-    st.stop()
+else:
+    st.warning("Select a feeder to view DT heatmap.")
 
 # Customer scores
 try:
+    if customer_monthly.empty:
+        st.error("No customer monthly data available.")
+        st.stop()
     customer_monthly["energy_billed_score"] = (1 - customer_monthly["billed_kwh"] / customer_monthly["billed_kwh"].replace(0, 1).max()).clip(0, 1)
     customer_monthly = customer_monthly.merge(feeder_merged[["Feeder", "feeder_billing_efficiency", "location_trust_score"]], on="Feeder", how="left")
     customer_monthly = customer_monthly.merge(dt_merged_monthly[["New Unique DT Nomenclature", "month", "dt_billing_efficiency", "location_trust_score"]], left_on=["NAME_OF_DT", "month"], right_on=["New Unique DT Nomenclature", "month"], how="left")
@@ -609,37 +654,47 @@ except Exception as e:
 
 # Customer Heatmap
 st.subheader("Theft Analysis")
-try:
-    filtered_customers = customer_monthly[customer_monthly["DT_Short_Name"] == selected_dt_short]
-    # Calculate average theft probability for sorting
-    customer_theft_scores = filtered_customers.groupby("ACCOUNT_NUMBER")["theft_probability"].mean().reset_index()
-    customer_order = customer_theft_scores.sort_values("theft_probability", ascending=False)["ACCOUNT_NUMBER"].tolist()
-    num_customers = st.number_input("Number of high-risk customers for Heatmap (0 for all)", min_value=0, value=10, step=1)
-    if num_customers > 0:
-        filtered_customers_heatmap = filtered_customers[filtered_customers["ACCOUNT_NUMBER"].isin(customer_order[:num_customers])]
-    else:
-        filtered_customers_heatmap = filtered_customers
-    pivot_data = filtered_customers_heatmap.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean").reindex(index=customer_order[:num_customers or None], columns=months)
-    if not pivot_data.empty:
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
-        plt.title(f"Theft Probability for {selected_dt_short} ({selected_feeder_short}, {period_label}) (Ranked by Theft Probability)")
-        st.pyplot(plt.gcf())
-        plt.close()
-    else:
-        st.warning(f"No customer data for {selected_dt_short} ({period_label}).")
-except Exception as e:
-    st.error(f"Customer heatmap failed: {e}")
-    st.stop()
+if selected_dt_short:
+    try:
+        filtered_customers = customer_monthly[customer_monthly["DT_Short_Name"] == selected_dt_short]
+        if filtered_customers.empty:
+            st.warning(f"No customer data for {selected_dt_short} ({period_label}).")
+        else:
+            # Calculate average theft probability for sorting
+            customer_theft_scores = filtered_customers.groupby("ACCOUNT_NUMBER")["theft_probability"].mean().reset_index()
+            customer_order = customer_theft_scores.sort_values("theft_probability", ascending=False)["ACCOUNT_NUMBER"].tolist()
+            num_customers = st.number_input("Number of high-risk customers for Heatmap (0 for all)", min_value=0, value=min(10, len(customer_order)), step=1)
+            if num_customers > 0:
+                filtered_customers_heatmap = filtered_customers[filtered_customers["ACCOUNT_NUMBER"].isin(customer_order[:num_customers])]
+            else:
+                filtered_customers_heatmap = filtered_customers
+            pivot_data = filtered_customers_heatmap.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean").reindex(index=customer_order[:num_customers or None], columns=months)
+            if not pivot_data.empty:
+                plt.figure(figsize=(10, 8))
+                sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
+                plt.title(f"Theft Probability for {selected_dt_short} ({selected_feeder_short}, {period_label}) (Ranked by Theft Probability)")
+                st.pyplot(plt.gcf())
+                plt.close()
+            else:
+                st.warning(f"No pivot data available for heatmap.")
+    except Exception as e:
+        st.error(f"Customer heatmap failed: {e}")
+        st.stop()
+else:
+    st.warning("Select a DT to view customer heatmap.")
 
 # Customer List
 st.subheader(f"Customers under {selected_dt_short} ({selected_feeder_short}, {period_label})")
-if st.button("Show Customer List"):
+if selected_dt_short and st.button("Show Customer List"):
     try:
+        filtered_customers = customer_monthly[customer_monthly["DT_Short_Name"] == selected_dt_short]
+        if filtered_customers.empty:
+            st.warning("No customers for this DT.")
+            st.stop()
         month_customers = filtered_customers.groupby(["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "Billing_Type"]).agg({
             "billed_kwh": "sum",
             "theft_probability": "mean",
-            "risk_tier": lambda x: pd.Series(x).mode()[0],
+            "risk_tier": lambda x: pd.Series(x).mode()[0] if not x.mode().empty else "Unknown",
             "pattern_deviation_score": "mean",
             "dt_relative_usage_score": "mean"
         }).reset_index()
@@ -662,65 +717,11 @@ if st.button("Show Customer List"):
 
 # CSV Export
 st.subheader("Export Customer Data")
-if not month_customers.empty:
-    csv = month_customers[display_columns].to_csv(index=False)
-    st.download_button(label=f"Download Customer List ({period_label})", data=csv, file_name=f"theft_analysis_{selected_dt_short}_{selected_feeder_short}_{period_label}.csv", mime="text/csv")
+if selected_dt_short and 'month_customers' in locals() and not month_customers.empty:
+    csv = month_customers.to_csv(index=False)
+    st.download_button(label=f"Download Customer List ({period_label})", data=csv, file_name=f"theft_analysis_{selected_dt_short}_{selected_feeder_short}_{period_label.replace(' ', '_')}.csv", mime="text/csv")
+else:
+    st.info("Generate the customer list first to enable export.")
 
 # Footer
 st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
-```
-
-### Changes Made
-1. **Fixed `calculate_pattern_deviation`**:
-   - Modified to use `group[valid_value_cols].iloc[0].values` for safer row access.
-   - Added checks for index bounds and missing columns with `st.warning` messages.
-   - Ensured `month_map` correctly maps columns to months.
-
-2. **New Criteria (`dt_relative_usage_score`)**:
-   - Added `calculate_dt_relative_usage` function to compute scores based on customer `billed_kwh` vs. DT average:
-     - 0.9 if < 30% of DT average.
-     - 0.1 if > 70% of DT average.
-     - Linear interpolation between 0.1 and 0.9 for 30%–70%.
-   - Merged into `customer_monthly` and included in `theft_probability` calculation.
-   - Added to `Customer List` display columns.
-
-3. **Added Slider for New Criteria**:
-   - Added `w_relative` slider for `dt_relative_usage_score` with default 0.2.
-   - Normalized five weights (`w_feeder`, `w_dt`, `w_location`, `w_pattern`, `w_relative`) to sum to 1.0.
-   - Updated UI with three-column layout for sliders.
-
-4. **Ranked Heatmaps**:
-   - DT heatmap: Sorted by average `1 - dt_billing_efficiency` using `dt_theft_scores` and `dt_order`.
-   - Customer heatmap: Sorted by average `theft_probability` using `customer_theft_scores` and `customer_order`.
-   - Used `reindex` with sorted order in `pivot_table`.
-
-5. **Button-Controlled Tables**:
-   - Wrapped Feeder Summary, DT Summary, and Customer List in `if st.button(...)` blocks.
-   - Tables are hidden until their respective buttons are clicked.
-
-6. **Customer List**:
-   - Updated to show **all customers** under the selected DT, sorted by `theft_probability` (highest at top).
-   - `num_customers` only limits the customer heatmap, not the list.
-   - Added `dt_relative_usage_score` to display columns.
-
-7. **Preserved Working Components**:
-   - Kept `get_short_name`, heatmap chronological order (`JAN`–`JUN` via `pd.Categorical`), dropdowns, debug mode, error reporting, and CSV exports unchanged.
-
-### Testing Notes
-- **Run**: `streamlit run updated_ETD.py`.
-- **Data**: Use `PTC_6_MONTHS_ENERGY_DATA.xlsx` with `Escalations` sheet.
-- **Verify**:
-  - Check `Customer List` for `dt_relative_usage_score` (0.1–0.9) and `pattern_deviation_score` (0.0–1.0).
-  - Confirm DT heatmap is sorted (highest `1 - dt_billing_efficiency` at top).
-  - Ensure customer heatmap respects `num_customers` but customer list shows all customers, sorted by `theft_probability`.
-  - Verify tables only appear when buttons are clicked.
-  - Test with `SULE ABUKA II` to confirm linkage and scores.
-  - Ensure no `IndexError` in `calculate_pattern_deviation`.
-- **Debug**: Enable debug mode to inspect `customer_pattern`, `dt_pattern`, and `dt_relative_usage` dataframes.
-
-### Answers to Your Questions
-- **Error**: Fixed the `IndexError` by ensuring robust column and index handling in `calculate_pattern_deviation`.
-- **New Criteria Name**: Named `dt_relative_usage_score`, reflecting deviation from DT average energy usage.
-- **Missing Slider**: Added a slider for `dt_relative_usage_score` (`w_relative`, default 0.2) in this version, as I assumed you’d want control over its weight. Weights are normalized across all five criteria.
-
-If you want different thresholds for `dt_relative_usage_score` (e.g., 1.0 for < 30%), a per-month version, or tweaks to the ranking logic, let me know! Also, if you need an updated legend or have sample data to debug further (e.g., `customer_df` columns), I’m here. 😎 Wagwan next?
