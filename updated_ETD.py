@@ -30,46 +30,8 @@ def get_short_name(name, is_dt=False):
         return parts[-1].strip()  # Last part for DT or Feeder
     return name if isinstance(name, str) else ""
 
-# Calculate consumption pattern deviation score
-def calculate_pattern_deviation(df, id_col, value_cols, score_per_zero=0.2, threshold=0.5):
-    pattern_scores = []
-    # Ensure only available columns are used
-    valid_value_cols = [col for col in value_cols if col in df.columns]
-    if not valid_value_cols:
-        st.error(f"No valid value columns in {id_col} dataframe: {value_cols}")
-        return pd.DataFrame(columns=["id", "month", "pattern_deviation_score"])
-    
-    for id_val, group in df.groupby(id_col):
-        # Get energy values for the group
-        values = group[valid_value_cols].values.flatten()
-        # Map columns to months (strip " (kWh)" from column names)
-        month_map = {col: col.replace(" (kWh)", "") for col in valid_value_cols}
-        # Calculate mean of non-zero values
-        non_zero_values = values[values > 0]
-        mean_non_zero = non_zero_values.mean() if len(non_zero_values) > 0 else 1
-        
-        # Calculate score for each month
-        for idx, col in enumerate(valid_value_cols):
-            energy = values[idx]
-            score = 0.0
-            if energy == 0:
-                score += score_per_zero  # Add score for zero reading
-            elif energy < mean_non_zero * threshold:
-                score += 0.1  # Add score for low reading
-            score = min(score, 1.0)  # Cap score at 1.0
-            pattern_scores.append({
-                "id": id_val,
-                "month": month_map[col],
-                "pattern_deviation_score": score
-            })
-    
-    result = pd.DataFrame(pattern_scores)
-    if result.empty:
-        st.warning(f"No pattern deviation scores calculated for {id_col}.")
-    return result
-
 # File uploader
-st.subheader("Upload Excel File")
+st.subheader("Upload Excel file")
 uploaded_file = st.file_uploader("Choose an Excel file (.xlsx)", type=["xlsx"])
 if uploaded_file is None:
     st.warning("Please upload an Excel file to proceed.")
@@ -234,6 +196,8 @@ if not customer_invalid_dts.empty:
             "Reason": "NAME_OF_DT not in Transformer Data"
         })
 error_report_df = pd.DataFrame(error_report)
+
+# Filter customer_df for valid DTs
 customer_df = customer_df[customer_df["NAME_OF_DT"].isin(valid_dts)]
 if customer_df.empty:
     st.error("No valid customers after filtering for Transformer Data DTs.")
@@ -482,58 +446,59 @@ dt_merged_monthly["location_trust_score"] = dt_merged_monthly["location_trust_sc
 
 # Feeder Summary Table
 st.subheader("Feeder Summary")
-try:
-    required_cols = ["Feeder_Short", "feeder_energy_kwh", "total_billed_kwh", "feeder_energy_lost_kwh", "feeder_financial_loss_naira", "feeder_billing_efficiency", "location_trust_score"]
-    missing_cols = [col for col in required_cols if col not in feeder_merged.columns]
-    if missing_cols:
-        st.error(f"Missing columns in feeder_merged: {missing_cols}")
-        st.stop()
-    feeder_summary = feeder_merged[required_cols].copy()
-    feeder_summary["Period"] = period_label
-    feeder_summary.columns = ["Feeder", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)", "Billing Efficiency", "Location Trust Score", "Period"]
-    feeder_summary = feeder_summary[["Feeder", "Period", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)", "Billing Efficiency", "Location Trust Score"]]
-    st.dataframe(feeder_summary.style.format({
-        "Energy Supplied (kWh)": "{:.2f}",
-        "Energy Billed (kWh)": "{:.2f}",
-        "Energy Unaccounted For (kWh)": "{:.2f}",
-        "Financial Loss (NGN)": "{:.2f}",
-        "Billing Efficiency": "{:.3f}",
-        "Location Trust Score": "{:.3f}"
-    }))
-except Exception as e:
-    st.error(f"Feeder summary failed: {e}")
-    st.stop()
+if st.button("Show Feeder Summary"):
+    try:
+        required_cols = ["Feeder_Short", "feeder_energy_kwh", "total_billed_kwh", "feeder_energy_lost_kwh", "feeder_financial_loss_naira", "feeder_billing_efficiency", "location_trust_score"]
+        missing_cols = [col for col in required_cols if col not in feeder_merged.columns]
+        if missing_cols:
+            st.error(f"Missing columns in feeder_merged: {missing_cols}")
+            st.stop()
+        feeder_summary = feeder_merged[required_cols].copy()
+        feeder_summary["Period"] = period_label
+        feeder_summary.columns = ["Feeder", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)", "Billing Efficiency", "Location Trust Score", "Period"]
+        feeder_summary = feeder_summary[["Feeder", "Period", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)", "Billing Efficiency", "Location Trust Score"]]
+        st.dataframe(feeder_summary.style.format({
+            "Energy Supplied (kWh)": "{:.2f}",
+            "Energy Billed (kWh)": "{:.2f}",
+            "Energy Unaccounted For (kWh)": "{:.2f}",
+            "Financial Loss (NGN)": "{:.2f}",
+            "Billing Efficiency": "{:.3f}",
+            "Location Trust Score": "{:.3f}"
+        }))
+    except Exception as e:
+        st.error(f"Feeder summary failed: {e}")
 
 # DT Summary Table
 st.subheader(f"DT Summary for {selected_feeder_short}")
-try:
-    dt_summary = dt_merged[dt_merged["Feeder"] == selected_feeder].groupby(["DT_Short_Name"]).agg({
-        "total_dt_kwh": "sum",
-        "total_billed_kwh": "sum",
-        "energy_lost_kwh": "sum",
-        "financial_loss_naira": "sum",
-        "dt_billing_efficiency": "mean",
-        "location_trust_score": "mean"
-    }).reset_index()
-    dt_summary["Period"] = period_label
-    dt_summary.columns = ["DT", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)", "Billing Efficiency", "Location Trust Score", "Period"]
-    dt_summary = dt_summary[["DT", "Period", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)", "Billing Efficiency", "Location Trust Score"]]
-    st.dataframe(dt_summary.style.format({
-        "Energy Supplied (kWh)": "{:.2f}",
-        "Energy Billed (kWh)": "{:.2f}",
-        "Energy Unaccounted For (kWh)": "{:.2f}",
-        "Financial Loss (NGN)": "{:.2f}",
-        "Billing Efficiency": "{:.3f}",
-        "Location Trust Score": "{:.3f}"
-    }))
-except Exception as e:
-    st.error(f"DT summary failed: {e}")
-    st.stop()
+if st.button("Show DT Summary"):
+    try:
+        dt_summary = dt_merged[dt_merged["Feeder"] == selected_feeder].groupby(["DT_Short_Name"]).agg({
+            "total_dt_kwh": "sum",
+            "total_billed_kwh": "sum",
+            "energy_lost_kwh": "sum",
+            "financial_loss_naira": "sum",
+            "dt_billing_efficiency": "mean",
+            "location_trust_score": "mean"
+        }).reset_index()
+        dt_summary["Period"] = period_label
+        dt_summary.columns = ["DT", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)", "Billing Efficiency", "Location Trust Score", "Period"]
+        dt_summary = dt_summary[["DT", "Period", "Energy Supplied (kWh)", "Energy Billed (kWh)", "Energy Unaccounted For (kWh)", "Financial Loss (NGN)", "Billing Efficiency", "Location Trust Score"]]
+        st.dataframe(dt_summary.style.format({
+            "Energy Supplied (kWh)": "{:.2f}",
+            "Energy Billed (kWh)": "{:.2f}",
+            "Energy Unaccounted For (kWh)": "{:.2f}",
+            "Financial Loss (NGN)": "{:.2f}",
+            "Billing Efficiency": "{:.3f}",
+            "Location Trust Score": "{:.3f}"
+        }))
+    except Exception as e:
+        st.error(f"DT summary failed: {e}")
 
 # DT Theft Probability Heatmap
 st.subheader("DT Theft Probability Heatmap")
 try:
     filtered_dt_agg = dt_merged_monthly[dt_merged_monthly["Feeder"] == selected_feeder]
+    filtered_dt_agg = filtered_dt_agg.sort_values(by="dt_billing_efficiency", ascending=True)  # Highest theft probability (lowest efficiency) at top
     if filtered_dt_agg.empty:
         st.error(f"No DT data for feeder {selected_feeder_short}.")
         st.stop()
@@ -541,7 +506,7 @@ try:
     if not dt_pivot.empty:
         plt.figure(figsize=(10, 8))
         sns.heatmap(1 - dt_pivot, cmap="YlOrRd", cbar_kws={"label": "DT Theft Probability"}, vmin=0, vmax=1)
-        plt.title(f"DT Theft Probability for {selected_feeder_short} ({period_label})")
+        plt.title(f"DT Theft Probability for {selected_feeder_short} ({period_label}) (Ranked by Theft Probability)")
         st.pyplot(plt.gcf())
         plt.close()
     else:
@@ -576,14 +541,17 @@ except Exception as e:
 st.subheader("Theft Analysis")
 try:
     filtered_customers = customer_monthly[customer_monthly["DT_Short_Name"] == selected_dt_short]
-    num_customers = st.number_input("Number of high-risk customers (0 for all)", min_value=0, value=10, step=1)
+    filtered_customers = filtered_customers.sort_values(by="theft_probability", ascending=False)  # Highest theft probability at top
+    num_customers = st.number_input("Number of high-risk customers for Heatmap (0 for all)", min_value=0, value=10, step=1)
     if num_customers > 0:
-        filtered_customers = filtered_customers.sort_values(by="theft_probability", ascending=False).head(num_customers)
-    pivot_data = filtered_customers.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean").reindex(columns=months)
+        filtered_customers_heatmap = filtered_customers.head(num_customers)
+    else:
+        filtered_customers_heatmap = filtered_customers
+    pivot_data = filtered_customers_heatmap.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean").reindex(columns=months)
     if not pivot_data.empty:
         plt.figure(figsize=(10, 8))
         sns.heatmap(pivot_data, cmap="YlOrRd", vmin=0, vmax=1, cbar_kws={"label": "Theft Probability"})
-        plt.title(f"Theft Probability for {selected_dt_short} ({selected_feeder_short}, {period_label})")
+        plt.title(f"Theft Probability for {selected_dt_short} ({selected_feeder_short}, {period_label}) (Ranked by Theft Probability)")
         st.pyplot(plt.gcf())
         plt.close()
     else:
@@ -594,27 +562,28 @@ except Exception as e:
 
 # Customer List
 st.subheader(f"Customers under {selected_dt_short} ({selected_feeder_short}, {period_label})")
-try:
-    month_customers = filtered_customers.groupby(["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "Billing_Type"]).agg({
-        "billed_kwh": "sum",
-        "theft_probability": "mean",
-        "risk_tier": lambda x: pd.Series(x).mode()[0],
-        "pattern_deviation_score": "mean"
-    }).reset_index()
-    display_columns = ["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", "Billing_Type", "theft_probability", "risk_tier", "pattern_deviation_score"]
-    missing_cols = [col for col in display_columns if col not in month_customers.columns]
-    if missing_cols:
-        st.error(f"Missing columns in month_customers: {missing_cols}")
-        st.stop()
-    styled_df = month_customers[display_columns].style.format({
-        "billed_kwh": "{:.2f}",
-        "theft_probability": "{:.3f}",
-        "pattern_deviation_score": "{:.3f}"
-    }).highlight_max(subset=["theft_probability"], color="lightcoral")
-    st.dataframe(styled_df)
-except Exception as e:
-    st.error(f"Customer list failed: {e}")
-    st.stop()
+if st.button("Show Customer List"):
+    try:
+        month_customers = filtered_customers.groupby(["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "Billing_Type"]).agg({
+            "billed_kwh": "sum",
+            "theft_probability": "mean",
+            "risk_tier": lambda x: pd.Series(x).mode()[0],
+            "pattern_deviation_score": "mean"
+        }).reset_index()
+        display_columns = ["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "billed_kwh", "Billing_Type", "theft_probability", "risk_tier", "pattern_deviation_score"]
+        missing_cols = [col for col in display_columns if col not in month_customers.columns]
+        if missing_cols:
+            st.error(f"Missing columns in month_customers: {missing_cols}")
+            st.stop()
+        month_customers = month_customers.sort_values(by="theft_probability", ascending=False)
+        styled_df = month_customers[display_columns].style.format({
+            "billed_kwh": "{:.2f}",
+            "theft_probability": "{:.3f}",
+            "pattern_deviation_score": "{:.3f}"
+        }).highlight_max(subset=["theft_probability"], color="lightcoral")
+        st.dataframe(styled_df)
+    except Exception as e:
+        st.error(f"Customer list failed: {e}")
 
 # CSV Export
 st.subheader("Export Customer Data")
