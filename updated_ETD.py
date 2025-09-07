@@ -30,6 +30,44 @@ def get_short_name(name, is_dt=False):
         return parts[-1].strip()  # Last part for DT or Feeder
     return name if isinstance(name, str) else ""
 
+# Calculate consumption pattern deviation score
+def calculate_pattern_deviation(df, id_col, value_cols, score_per_zero=0.2, threshold=0.5):
+    pattern_scores = []
+    # Ensure only available columns are used
+    valid_value_cols = [col for col in value_cols if col in df.columns]
+    if not valid_value_cols:
+        st.error(f"No valid value columns in {id_col} dataframe: {value_cols}")
+        return pd.DataFrame(columns=["id", "month", "pattern_deviation_score"])
+    
+    for id_val, group in df.groupby(id_col):
+        # Get energy values for the group
+        values = group[valid_value_cols].values.flatten()
+        # Map columns to months (strip " (kWh)" from column names)
+        month_map = {col: col.replace(" (kWh)", "") for col in valid_value_cols}
+        # Calculate mean of non-zero values
+        non_zero_values = values[values > 0]
+        mean_non_zero = non_zero_values.mean() if len(non_zero_values) > 0 else 1
+        
+        # Calculate score for each month
+        for idx, col in enumerate(valid_value_cols):
+            energy = values[idx]
+            score = 0.0
+            if energy == 0:
+                score += score_per_zero  # Add score for zero reading
+            elif energy < mean_non_zero * threshold:
+                score += 0.1  # Add score for low reading
+            score = min(score, 1.0)  # Cap score at 1.0
+            pattern_scores.append({
+                "id": id_val,
+                "month": month_map[col],
+                "pattern_deviation_score": score
+            })
+    
+    result = pd.DataFrame(pattern_scores)
+    if result.empty:
+        st.warning(f"No pattern deviation scores calculated for {id_col}.")
+    return result
+
 # File uploader
 st.subheader("Upload Excel File")
 uploaded_file = st.file_uploader("Choose an Excel file (.xlsx)", type=["xlsx"])
@@ -307,27 +345,11 @@ if dt_df.empty or customer_df.empty:
     st.stop()
 
 # Calculate consumption pattern deviation scores
-def calculate_pattern_deviation(df, id_col, value_cols, score_per_zero=0.2, threshold=0.5):
-    pattern_scores = []
-    for _, row in df.groupby(id_col):
-        values = row[value_cols].values.flatten()
-        non_zero_values = values[values > 0]
-        mean_non_zero = non_zero_values.mean() if len(non_zero_values) > 0 else 1
-        zero_count = np.sum(values == 0)
-        low_count = np.sum(values < mean_non_zero * threshold) if mean_non_zero > 0 else 0
-        score = (zero_count * score_per_zero + low_count * 0.1).clip(0, 1)
-        for i in range(len(values)):
-            pattern_scores.append({"id": row[id_col].iloc[0], "month": months[i], "pattern_deviation_score": score})
-    return pd.DataFrame(pattern_scores)
-
-# Customer pattern deviation
 customer_pattern = calculate_pattern_deviation(
     customer_df,
     id_col="ACCOUNT_NUMBER",
     value_cols=[f"{m} (kWh)" for m in months]
 )
-
-# DT pattern deviation
 dt_pattern = calculate_pattern_deviation(
     dt_df,
     id_col="New Unique DT Nomenclature",
