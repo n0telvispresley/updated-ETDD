@@ -87,48 +87,6 @@ def calculate_dt_relative_usage(customer_monthly):
     cust_sum["dt_relative_usage_score"] = cust_sum.apply(_score, axis=1)
     return cust_sum[["ACCOUNT_NUMBER", "dt_relative_usage_score"]]
 
-def optimize_customer_weights(customer_df_for_opt, escalations_df, w_feeder, w_dt, w_location, step=0.1):
-    accounts = set(escalations_df["Account No"].astype(str))
-    sub = customer_df_for_opt[customer_df_for_opt["ACCOUNT_NUMBER"].astype(str).isin(accounts)].copy()
-    if sub.empty:
-        return (st.session_state.get("w_pattern", 0.2),
-                st.session_state.get("w_relative", 0.2),
-                st.session_state.get("w_zero", 0.05),
-                None, None)
-    best_mean = -np.inf
-    best_combo = (st.session_state.get("w_pattern", 0.2),
-                  st.session_state.get("w_relative", 0.2),
-                  st.session_state.get("w_zero", 0.05))
-    pre_mean = (
-        w_feeder * (1 - sub["feeder_billing_efficiency"]) +
-        w_dt * (1 - sub["dt_billing_efficiency"]) +
-        w_location * sub["location_trust_score"] +
-        st.session_state.get("w_pattern", 0.2) * sub["pattern_deviation_score"] +
-        st.session_state.get("w_relative", 0.2) * sub["dt_relative_usage_score"] +
-        st.session_state.get("w_zero", 0.05) * sub["zero_counter_score"]
-    ).mean()
-    rng = np.arange(0.0, 1.0001, step)
-    for wp in rng:
-        for wr in rng:
-            for wz in rng:
-                total = wp + wr + wz
-                if total == 0:
-                    continue
-                wp_n, wr_n, wz_n = wp/total, wr/total, wz/total
-                theft_scores = (
-                    w_feeder * (1 - sub["feeder_billing_efficiency"]) +
-                    w_dt * (1 - sub["dt_billing_efficiency"]) +
-                    w_location * sub["location_trust_score"] +
-                    wp_n * sub["pattern_deviation_score"] +
-                    wr_n * sub["dt_relative_usage_score"] +
-                    wz_n * sub["zero_counter_score"]
-                )
-                mean_score = theft_scores.mean()
-                if mean_score > best_mean:
-                    best_mean = mean_score
-                    best_combo = (wp_n, wr_n, wz_n)
-    return best_combo[0], best_combo[1], best_combo[2], pre_mean, best_mean
-
 def generate_escalations_report(ppm_df, ppd_df, escalations_df, customer_scores_df, months_list):
     escalations = escalations_df.copy()
     acct_col = None
@@ -450,24 +408,18 @@ with col6:
 # Weights sliders
 st.subheader("Adjust Theft Probability Weights")
 colw1, colw2, colw3, colw4, colw5, colw6 = st.columns(6)
-if "w_pattern" not in st.session_state:
-    st.session_state.w_pattern = 0.2
-if "w_relative" not in st.session_state:
-    st.session_state.w_relative = 0.2
-if "w_zero" not in st.session_state:
-    st.session_state.w_zero = 0.05
 with colw1:
     w_feeder = st.slider("Feeder Billing Efficiency Weight", 0.0, 1.0, 0.2, 0.01)
 with colw2:
     w_dt = st.slider("DT Billing Efficiency Weight", 0.0, 1.0, 0.2, 0.01)
 with colw3:
-    w_location = st.slider("Location Trust Score Weight", 0.0, 1.0, 0.2, 0.01)
+    w_location = st.slider("Location Trust Score Weight", 0.0, 1.0, 0.4, 0.01)
 with colw4:
-    w_pattern = st.slider("Consumption Pattern Deviation Weight", 0.0, 1.0, st.session_state.w_pattern, 0.01, key="w_pattern")
+    w_pattern = st.slider("Consumption Pattern Deviation Weight", 0.0, 1.0, 0.7, 0.01)
 with colw5:
-    w_relative = st.slider("DT Relative Usage Score Weight", 0.0, 1.0, st.session_state.w_relative, 0.01, key="w_relative")
+    w_relative = st.slider("DT Relative Usage Score Weight", 0.0, 1.0, 0.7, 0.01)
 with colw6:
-    w_zero = st.slider("Zero Frequency Weight", 0.0, 1.0, st.session_state.w_zero, 0.01, key="w_zero")
+    w_zero = st.slider("Zero Frequency Weight", 0.0, 1.0, 0.7, 0.01)
 
 # Normalize weights
 total_weight = w_feeder + w_dt + w_location + w_pattern + w_relative + w_zero
@@ -481,7 +433,7 @@ w_pattern = w_pattern / total_weight
 w_relative = w_relative / total_weight
 w_zero = w_zero / total_weight
 
-# Compute location trust scores for optimizer
+# Compute location trust scores
 escalations_df_local = escalations_df.copy()
 escalations_df_local["Report_Count"] = 1
 feeder_escal = escalations_df_local.groupby("Feeder", as_index=False)["Report_Count"].sum()
@@ -499,80 +451,6 @@ else:
 if "DT Nomenclature" not in dt_escal.columns or "location_trust_score" not in dt_escal.columns:
     st.warning("dt_escal missing required columns. Using default location_trust_score of 0.0 for DTs.")
     dt_escal = pd.DataFrame({"DT Nomenclature": dt_df["NAME_OF_DT"], "location_trust_score": 0.0})
-
-# Optimize weights
-if st.button("Optimize Customer-Level Weights for Escalations"):
-    try:
-        month_indices = {m: i for i, m in enumerate(months)}
-        selected_months = months[month_indices[start_month]:month_indices[end_month] + 1]
-        if not selected_months:
-            st.error("No months selected.")
-            st.stop()
-        customer_monthly_sel = customer_monthly[customer_monthly["month"].isin(selected_months)].copy()
-        if customer_monthly_sel.empty:
-            st.error("No customer monthly data for selected months.")
-            st.stop()
-        feeder_monthly = feeder_df.melt(id_vars=["Feeder", "Feeder_Short", "Tariff_Rate"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
-        feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
-        feeder_monthly = feeder_monthly[feeder_monthly["month"].isin(selected_months)]
-        feeder_agg = feeder_monthly.groupby(["Feeder"])["feeder_energy_kwh"].sum().reset_index()
-        dt_sel = dt_agg_monthly[dt_agg_monthly["month"].isin(selected_months)].copy()
-        dt_agg_sum = dt_sel.groupby(["NAME_OF_DT", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership", "Connection Status", "total_energy_kwh"], as_index=False)["total_dt_kwh"].sum()
-        cust_agg = customer_monthly_sel.groupby(["NAME_OF_DT", "Feeder", "ACCOUNT_NUMBER"], as_index=False)["billed_kwh"].sum()
-        dt_customer_billed = cust_agg.groupby("NAME_OF_DT", as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
-        dt_merged = dt_agg_sum.merge(dt_customer_billed, left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
-        dt_merged["customer_billed_kwh"] = dt_merged["customer_billed_kwh"].fillna(0)
-        dt_merged["total_billed_kwh"] = np.where(dt_merged["Ownership"].str.strip().str.upper().isin(["PRIVATE"]), dt_merged["total_dt_kwh"], dt_merged["customer_billed_kwh"])
-        dt_merged["dt_billing_efficiency"] = np.where((dt_merged["Connection Status"].str.strip().str.upper()=="NOT CONNECTED") & (dt_merged["total_energy_kwh"]>0), 0.0, (dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0,1)).clip(0,1))
-        feeder_billed = dt_merged.groupby("Feeder", as_index=False)["total_billed_kwh"].sum()
-        feeder_merged = feeder_agg.merge(feeder_billed, on="Feeder", how="left")
-        feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
-        feeder_merged["feeder_billing_efficiency"] = (feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0,1)).clip(0,1)
-        feeder_merged = feeder_merged.merge(feeder_escal[["Feeder", "location_trust_score"]], on="Feeder", how="left")
-        feeder_merged["location_trust_score"] = feeder_merged["location_trust_score"].fillna(0.0)
-        customer_full = customer_df.copy()
-        pattern_df = calculate_pattern_deviation(customer_full, "ACCOUNT_NUMBER", [f"{m} (kWh)" for m in months])
-        zero_df = calculate_zero_counter(customer_full, "ACCOUNT_NUMBER", [f"{m} (kWh)" for m in months])
-        dt_relative_df = calculate_dt_relative_usage(customer_monthly_sel)
-        cust_features = cust_agg.groupby("ACCOUNT_NUMBER", as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
-        acct_to_dt = customer_df[["ACCOUNT_NUMBER", "NAME_OF_DT", "Feeder", "DT_Short_Name"]].drop_duplicates(subset=["ACCOUNT_NUMBER"])
-        cust_features = cust_features.merge(acct_to_dt, on="ACCOUNT_NUMBER", how="left")
-        cust_features = cust_features.merge(dt_merged[["NAME_OF_DT", "dt_billing_efficiency"]], left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
-        cust_features = cust_features.merge(feeder_merged[["Feeder", "feeder_billing_efficiency", "location_trust_score"]], on="Feeder", how="left")
-        cust_features = cust_features.merge(pattern_df, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
-        cust_features = cust_features.merge(zero_df, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
-        cust_features = cust_features.merge(dt_relative_df, on="ACCOUNT_NUMBER", how="left")
-        for c in ["feeder_billing_efficiency", "dt_billing_efficiency", "location_trust_score", "pattern_deviation_score", "zero_counter_score", "dt_relative_usage_score"]:
-            if c not in cust_features.columns:
-                cust_features[c] = 0.0
-        cust_features[["feeder_billing_efficiency", "dt_billing_efficiency", "location_trust_score", "pattern_deviation_score", "zero_counter_score", "dt_relative_usage_score"]] = cust_features[["feeder_billing_efficiency", "dt_billing_efficiency", "location_trust_score", "pattern_deviation_score", "zero_counter_score", "dt_relative_usage_score"]].fillna(0.0)
-        try:
-            wp_n, wr_n, wz_n, pre_mean, post_mean = optimize_customer_weights(cust_features, escalations_df_local, w_feeder, w_dt, w_location)
-            st.session_state["w_pattern"] = float(wp_n)
-            st.session_state["w_relative"] = float(wr_n)
-            st.session_state["w_zero"] = float(wz_n)
-            st.success(f"Optimizer applied pattern={wp_n:.3f}, relative={wr_n:.3f}, zero={wz_n:.3f}.")
-            if pre_mean is not None and post_mean is not None:
-                st.info(f"Escalation avg theft mean {pre_mean:.3f} -> {post_mean:.3f}")
-        except Exception as e:
-            st.error(f"Optimizer failed: {e}")
-    except Exception as e:
-        st.error(f"Optimizer pre-processing failed: {e}")
-
-# Re-normalize weights
-w_pattern = st.session_state.get("w_pattern", w_pattern)
-w_relative = st.session_state.get("w_relative", w_relative)
-w_zero = st.session_state.get("w_zero", w_zero)
-total_weight = w_feeder + w_dt + w_location + w_pattern + w_relative + w_zero
-if total_weight == 0:
-    st.error("Total weight cannot be zero after optimization.")
-    st.stop()
-w_feeder = w_feeder / total_weight
-w_dt = w_dt / total_weight
-w_location = w_location / total_weight
-w_pattern = w_pattern / total_weight
-w_relative = w_relative / total_weight
-w_zero = w_zero / total_weight
 
 # Compute customer monthly / theft probability
 pattern_df_full = calculate_pattern_deviation(customer_df, "ACCOUNT_NUMBER", [f"{m} (kWh)" for m in months])
@@ -741,7 +619,7 @@ except Exception as e:
 # DT Summary
 st.subheader("DT Summary")
 try:
-    dt_summary_show = dt_merged.groupby("DT_Short_Name").agg({
+    dt_summary_show = dt_merged.groupby(["DT_Short_Name"]).agg({
         "total_dt_kwh": "sum",
         "total_billed_kwh": "sum",
         "dt_billing_efficiency": "mean"
@@ -806,15 +684,16 @@ try:
     unbilled_summary["monetary_loss_ngn"] = unbilled_summary["unbilled_kwh"] * unbilled_summary["Tariff_Rate"]
     total_unbilled_kwh = unbilled_summary["unbilled_kwh"].sum()
     total_monetary_loss = unbilled_summary["monetary_loss_ngn"].sum()
-    unbilled_summary = unbilled_summary.append({
-        "Feeder": "Total",
-        "Feeder_Short": "Total",
-        "feeder_energy_kwh": np.nan,
-        "total_billed_kwh": np.nan,
-        "Tariff_Rate": np.nan,
-        "unbilled_kwh": total_unbilled_kwh,
-        "monetary_loss_ngn": total_monetary_loss
-    }, ignore_index=True)
+    total_row = pd.DataFrame({
+        "Feeder": ["Total"],
+        "Feeder_Short": ["Total"],
+        "feeder_energy_kwh": [np.nan],
+        "total_billed_kwh": [np.nan],
+        "Tariff_Rate": [np.nan],
+        "unbilled_kwh": [total_unbilled_kwh],
+        "monetary_loss_ngn": [total_monetary_loss]
+    })
+    unbilled_summary = pd.concat([unbilled_summary, total_row], ignore_index=True)
     st.dataframe(unbilled_summary.style.format({
         "feeder_energy_kwh": "{:.2f}",
         "total_billed_kwh": "{:.2f}",
