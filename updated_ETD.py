@@ -448,7 +448,7 @@ else:
     dt_escal = pd.DataFrame({"DT Nomenclature": dt_df["NAME_OF_DT"], "location_trust_score": 0.0})
 
 # Debug: Check dt_escal contents
-if "DT Nomenclature" not in dt_escal.columns or "location_trust_score" in dt_escal.columns:
+if "DT Nomenclature" not in dt_escal.columns or "location_trust_score" not in dt_escal.columns:
     st.warning("dt_escal missing required columns. Using default location_trust_score of 0.0 for DTs.")
     dt_escal = pd.DataFrame({"DT Nomenclature": dt_df["NAME_OF_DT"], "location_trust_score": 0.0})
 
@@ -619,23 +619,29 @@ except Exception as e:
 # DT Summary
 st.subheader("DT Summary")
 try:
-    # Simplified DT summary to ensure DT_Short_Name is preserved
-    dt_summary_show = dt_agg_monthly.groupby(["NAME_OF_DT", "DT_Short_Name"]).agg({
-        "total_dt_kwh": "sum",
-        "total_billed_kwh": "sum",
-        "dt_billing_efficiency": "mean"
+    # Compute total_billed_kwh from customer data
+    cust_agg = customer_monthly[customer_monthly["month"].isin(selected_months)].groupby(["NAME_OF_DT", "DT_Short_Name"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
+    # Aggregate DT data
+    dt_summary_show = dt_agg_monthly[dt_agg_monthly["month"].isin(selected_months)].groupby(["NAME_OF_DT", "DT_Short_Name"]).agg({
+        "total_dt_kwh": "sum"
     }).reset_index()
-    if "total_billed_kwh" not in dt_summary_show.columns:
-        # Calculate total_billed_kwh if not already computed
-        cust_agg = customer_monthly_sel.groupby(["NAME_OF_DT", "DT_Short_Name"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
-        dt_summary_show = dt_summary_show.merge(cust_agg, on=["NAME_OF_DT", "DT_Short_Name"], how="left")
-        dt_summary_show["total_billed_kwh"] = dt_summary_show["total_billed_kwh"].fillna(0)
-        dt_summary_show["dt_billing_efficiency"] = np.where(
-            (dt_summary_show["total_dt_kwh"] == 0),
-            0.0,
-            (dt_summary_show["total_billed_kwh"] / dt_summary_show["total_dt_kwh"]).clip(0, 1)
-        )
-    st.dataframe(dt_summary_show.style.format({
+    # Merge with customer billed data
+    dt_summary_show = dt_summary_show.merge(cust_agg, on=["NAME_OF_DT", "DT_Short_Name"], how="left")
+    dt_summary_show["total_billed_kwh"] = dt_summary_show["total_billed_kwh"].fillna(0)
+    # Apply ownership logic
+    dt_summary_show = dt_summary_show.merge(dt_agg_monthly[["NAME_OF_DT", "Ownership", "Connection Status", "total_energy_kwh"]].drop_duplicates(), on="NAME_OF_DT", how="left")
+    dt_summary_show["total_billed_kwh"] = np.where(
+        dt_summary_show.get("Ownership", "").str.strip().str.upper().isin(["PRIVATE"]),
+        dt_summary_show["total_dt_kwh"],
+        dt_summary_show["total_billed_kwh"]
+    )
+    # Compute billing efficiency
+    dt_summary_show["dt_billing_efficiency"] = np.where(
+        (dt_summary_show.get("Connection Status", "").str.strip().str.upper() == "NOT CONNECTED") & (dt_summary_show["total_energy_kwh"] > 0),
+        0.0,
+        (dt_summary_show["total_billed_kwh"] / dt_summary_show["total_dt_kwh"].replace(0, 1)).clip(0, 1)
+    )
+    st.dataframe(dt_summary_show[["NAME_OF_DT", "DT_Short_Name", "total_dt_kwh", "total_billed_kwh", "dt_billing_efficiency"]].style.format({
         "total_dt_kwh": "{:.2f}",
         "total_billed_kwh": "{:.2f}",
         "dt_billing_efficiency": "{:.3f}"
@@ -699,23 +705,64 @@ try:
     total_money_collected = unbilled_summary["money_collected_ngn"].sum()
     total_money_lost = unbilled_summary["money_lost_ngn"].sum()
     cumulative_billing_efficiency = total_energy_billed / (total_energy_billed + total_energy_not_billed) if (total_energy_billed + total_energy_not_billed) > 0 else 0.0
-    color = "red" if cumulative_billing_efficiency < 0.8 else "green"
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.metric("Total Energy Billed (kWh)", f"{total_energy_billed:.2f}", delta_color="off")
-        st.markdown(f"<style>.stMetric {{ color: {color}; }}</style>", unsafe_allow_html=True)
-    with col2:
-        st.metric("Total Energy Not Billed (kWh)", f"{total_energy_not_billed:.2f}", delta_color="off")
-        st.markdown(f"<style>.stMetric {{ color: {color}; }}</style>", unsafe_allow_html=True)
-    with col3:
-        st.metric("Money Collected (NGN)", f"₦{total_money_collected:.2f}", delta_color="off")
-        st.markdown(f"<style>.stMetric {{ color: {color}; }}</style>", unsafe_allow_html=True)
-    with col4:
-        st.metric("Money Lost (NGN)", f"₦{total_money_lost:.2f}", delta_color="off")
-        st.markdown(f"<style>.stMetric {{ color: {color}; }}</style>", unsafe_allow_html=True)
-    with col5:
-        st.metric("Cumulative Billing Efficiency", f"{cumulative_billing_efficiency:.3f}", delta_color="off")
-        st.markdown(f"<style>.stMetric {{ color: {color}; }}</style>", unsafe_allow_html=True)
+    bg_color = "#FF4B4B" if cumulative_billing_efficiency < 0.8 else "#00FF00"
+
+    # First container: Total Energy Billed and Total Energy Not Billed
+    with st.container():
+        st.markdown(
+            f"""
+            <div style="background-color: {bg_color}; padding: 10px; border-radius: 5px;">
+                <div style="display: flex; justify-content: space-between;">
+                    <div style="flex: 1; margin-right: 10px;">
+                        <h4>Total Energy Billed (kWh)</h4>
+                        <p style="font-size: 18px; font-weight: bold;">{total_energy_billed:.2f}</p>
+                    </div>
+                    <div style="flex: 1;">
+                        <h4>Total Energy Not Billed (kWh)</h4>
+                        <p style="font-size: 18px; font-weight: bold;">{total_energy_not_billed:.2f}</p>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    # Second container: Money Collected and Money Lost
+    with st.container():
+        st.markdown(
+            f"""
+            <div style="background-color: {bg_color}; padding: 10px; border-radius: 5px; margin-top: 10px;">
+                <div style="display: flex; justify-content: space-between;">
+                    <div style="flex: 1; margin-right: 10px;">
+                        <h4>Money Collected (NGN)</h4>
+                        <p style="font-size: 18px; font-weight: bold;">₦{total_money_collected:.2f}</p>
+                    </div>
+                    <div style="flex: 1;">
+                        <h4>Money Lost (NGN)</h4>
+                        <p style="font-size: 18px; font-weight: bold;">₦{total_money_lost:.2f}</p>
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    # Third container: Cumulative Billing Efficiency
+    with st.container():
+        st.markdown(
+            f"""
+            <div style="background-color: {bg_color}; padding: 10px; border-radius: 5px; margin-top: 10px;">
+                <div style="display: flex; justify-content: space-between;">
+                    <div style="flex: 1;">
+                        <h4>Cumulative Billing Efficiency</h4>
+                        <p style="font-size: 18px; font-weight: bold;">{cumulative_billing_efficiency:.3f}</p>
+                    </div>
+                    <div style="flex: 1;"></div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 except Exception as e:
     st.error(f"Quick Performance Metrics failed: {e}")
 
