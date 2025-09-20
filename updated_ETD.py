@@ -307,6 +307,13 @@ ppm_df["Billing_Type"] = "PPM"
 ppd_df["Billing_Type"] = "PPD"
 customer_df_full = pd.concat([ppm_df, ppd_df], ignore_index=True, sort=False)
 
+# Add Feeder column to full dataset (before filtering)
+customer_df_full["Feeder"] = customer_df_full["NAME_OF_DT"].apply(
+    lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x
+)
+customer_df_full["Feeder"] = customer_df_full["Feeder"].apply(normalize_name)
+
+
 if customer_df_full.empty:
     st.error("No customer rows found in PPM/PPD after load.")
     st.stop()
