@@ -6,14 +6,10 @@ import seaborn as sns
 import re
 import io
 
-# -------------------------
 # Streamlit page config
-# -------------------------
 st.set_page_config(page_title="IE Energy Theft Detection Dashboard", layout="wide")
 
-# -------------------------
 # Utility functions
-# -------------------------
 def preserve_exact_string(value):
     if pd.isna(value) or value is None:
         return ""
@@ -91,7 +87,7 @@ def calculate_dt_relative_usage(customer_monthly):
     cust_sum["dt_relative_usage_score"] = cust_sum.apply(_score, axis=1)
     return cust_sum[["ACCOUNT_NUMBER", "dt_relative_usage_score"]]
 
-def optimize_customer_weights(customer_df_for_opt, escalations_df, w_feeder, w_dt, w_location, step=0.05):
+def optimize_customer_weights(customer_df_for_opt, escalations_df, w_feeder, w_dt, w_location, step=0.1):
     accounts = set(escalations_df["Account No"].astype(str))
     sub = customer_df_for_opt[customer_df_for_opt["ACCOUNT_NUMBER"].astype(str).isin(accounts)].copy()
     if sub.empty:
@@ -194,9 +190,7 @@ def generate_escalations_report(ppm_df, ppd_df, escalations_df, customer_scores_
                 reports.append(row)
     return pd.DataFrame(reports)
 
-# -----------------------------
 # Begin main app logic
-# -----------------------------
 st.title("Ikeja Electric Energy Theft Detection Dashboard")
 
 st.subheader("Upload Excel File")
@@ -255,7 +249,7 @@ if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_d
     st.error("One or more required sheets missing. Check that your Excel file has these sheets: Feeder Data, Transformer Data, Customer Data_PPM, Customer Data_PPD, Feeder Band, Customer Tariffs, Escalations.")
     st.stop()
 
-# Validate columns presence (best-effort)
+# Validate columns presence
 required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING", "TARIFF"]
 for col in required_customer_cols:
     if col not in ppm_df.columns:
@@ -279,7 +273,7 @@ if "Rate (NGN)" not in tariff_df.columns:
     else:
         tariff_df["Rate (NGN)"] = 209.5
 
-# Normalize month columns and convert to (kWh) columns
+# Normalize month columns
 months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
 for df, unit in [(feeder_df, 1000), (ppm_df, 1), (ppd_df, 1)]:
     for m in months:
@@ -297,13 +291,13 @@ for m in months:
         if col not in dt_df.columns:
             dt_df[col] = 0
 
-# Drop raw month columns if present
+# Drop raw month columns
 for df in [feeder_df, dt_df, ppm_df, ppd_df]:
     drop_cols = [c for c in df.columns if c in months]
     if drop_cols:
         df.drop(columns=drop_cols, inplace=True, errors="ignore")
 
-# Normalize names across sheets
+# Normalize names
 name_normalizations = [
     ("Feeder", feeder_df), ("NAME_OF_FEEDER", ppm_df), ("NAME_OF_FEEDER", ppd_df), ("Feeder", band_df),
     ("NAME_OF_DT", ppm_df), ("NAME_OF_DT", ppd_df), ("New Unique DT Nomenclature", dt_df),
@@ -316,7 +310,7 @@ for col, df in name_normalizations:
     if col in df.columns:
         df[col] = df[col].apply(normalize_name)
 
-# Compute band rates and map feeders -> tariff rates (MOVED EARLIER)
+# Compute band rates and map feeders -> tariff rates
 if "Feeder" not in band_df.columns:
     band_df["Feeder"] = ""
 if "BAND" not in band_df.columns:
@@ -347,17 +341,17 @@ ppm_df["Billing_Type"] = "PPM"
 ppd_df["Billing_Type"] = "PPD"
 customer_df = pd.concat([ppm_df, ppd_df], ignore_index=True, sort=False)
 
-# Create Feeder columns safely
+# Create Feeder columns
 customer_df = add_feeder_column_safe(customer_df, "NAME_OF_DT")
 dt_df["NAME_OF_DT"] = dt_df.get("New Unique DT Nomenclature", dt_df.get("NAME_OF_DT", ""))
 dt_df["Feeder"] = dt_df["NAME_OF_DT"].apply(lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x)
 dt_df["Feeder"] = dt_df["Feeder"].apply(normalize_name)
 
-# Merge Tariff_Rate into dt_df (NOW SAFE since Tariff_Rate exists in feeder_df)
+# Merge Tariff_Rate into dt_df
 dt_df = dt_df.merge(feeder_df[["Feeder", "Tariff_Rate"]], on="Feeder", how="left")
 dt_df["Tariff_Rate"] = dt_df["Tariff_Rate"].fillna(209.5)
 
-# Filter dt_df and customer_df to only feeders present in feeder_df
+# Filter to valid feeders
 valid_feeders = set(feeder_df["Feeder"])
 if "Feeder" in dt_df.columns:
     dt_df = dt_df[dt_df["Feeder"].isin(valid_feeders)].copy()
@@ -410,22 +404,24 @@ except Exception as e:
     st.error(f"Failed to melt DT monthly: {e}")
     st.stop()
 
-# Filter month range UI
+# Filter UI
 st.subheader("Filters")
-col1, col2, col3, col4, col5, col6 = st.columns(6)
+col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 3, 3, 1, 1])
 with col1:
     bu_options = sorted(customer_df["BUSINESS_UNIT"].unique()) if "BUSINESS_UNIT" in customer_df.columns else []
-    selected_bu = st.selectbox("Select Business Unit", [""] + bu_options) if bu_options else ""
+    selected_bu = st.selectbox("Select Business Unit", bu_options, index=0 if bu_options else None)
 with col2:
     if selected_bu:
         customer_df_bu = customer_df[customer_df["BUSINESS_UNIT"] == selected_bu]
         ut_options = sorted(customer_df_bu["UNDERTAKING"].unique()) if "UNDERTAKING" in customer_df_bu.columns else []
-        selected_ut = st.selectbox("Select Undertaking", [""] + ut_options) if ut_options else ""
+        selected_ut = st.selectbox("Select Undertaking", ut_options, index=0 if ut_options else None)
     else:
         selected_ut = ""
+        ut_options = []
+        st.selectbox("Select Undertaking", ["No Business Unit Selected"], index=0, disabled=True)
 with col3:
     feeder_options = sorted(feeder_df["Feeder_Short"].unique()) if "Feeder_Short" in feeder_df.columns else sorted(feeder_df["Feeder"].unique())
-    selected_feeder_short = st.selectbox("Select Feeder", [""] + feeder_options) if feeder_options else ""
+    selected_feeder_short = st.selectbox("Select Feeder", feeder_options, index=0 if feeder_options else None)
 with col4:
     selected_feeder = ""
     selected_dt_short = ""
@@ -437,9 +433,11 @@ with col4:
             selected_feeder = selected_feeder_short
         dt_df_filtered = dt_df[dt_df["Feeder"] == selected_feeder]
         dt_options = sorted(dt_df_filtered["DT_Short_Name"].unique())
-        selected_dt_short = st.selectbox("Select DT", [""] + dt_options) if dt_options else ""
+        selected_dt_short = st.selectbox("Select DT", dt_options, index=0 if dt_options else None)
+    else:
+        st.selectbox("Select DT", ["No Feeder Selected"], index=0, disabled=True)
 with col5:
-    start_month = st.selectbox("Start Month", months)
+    start_month = st.selectbox("Start Month", months, index=0)
 with col6:
     end_month = st.selectbox("End Month", months, index=len(months)-1)
     if months.index(start_month) > months.index(end_month):
@@ -448,7 +446,7 @@ with col6:
 
 # Weights sliders
 st.subheader("Adjust Theft Probability Weights")
-colw1, colw2, colw3 = st.columns(3)
+colw1, colw2, colw3, colw4, colw5, colw6 = st.columns(6)
 if "w_pattern" not in st.session_state:
     st.session_state.w_pattern = 0.2
 if "w_relative" not in st.session_state:
@@ -457,12 +455,15 @@ if "w_zero" not in st.session_state:
     st.session_state.w_zero = 0.05
 with colw1:
     w_feeder = st.slider("Feeder Billing Efficiency Weight", 0.0, 1.0, 0.2, 0.01)
+with colw2:
     w_dt = st.slider("DT Billing Efficiency Weight", 0.0, 1.0, 0.2, 0.01)
-with col2:
-    w_location = st.slider("Location Trust Score Weight", 0.0, 1.0, 0.2, 0.01)
-    w_pattern = st.slider("Consumption Pattern Deviation Weight", 0.0, 1.0, st.session_state.w_pattern, 0.01, key="w_pattern")
 with colw3:
+    w_location = st.slider("Location Trust Score Weight", 0.0, 1.0, 0.2, 0.01)
+with colw4:
+    w_pattern = st.slider("Consumption Pattern Deviation Weight", 0.0, 1.0, st.session_state.w_pattern, 0.01, key="w_pattern")
+with colw5:
     w_relative = st.slider("DT Relative Usage Score Weight", 0.0, 1.0, st.session_state.w_relative, 0.01, key="w_relative")
+with colw6:
     w_zero = st.slider("Zero Frequency Weight", 0.0, 1.0, st.session_state.w_zero, 0.01, key="w_zero")
 
 # Normalize weights
@@ -545,7 +546,7 @@ if st.button("Optimize Customer-Level Weights for Escalations"):
     except Exception as e:
         st.error(f"Optimizer pre-processing failed: {e}")
 
-# After possible optimizer update, re-normalize weights
+# Re-normalize weights
 w_pattern = st.session_state.get("w_pattern", w_pattern)
 w_relative = st.session_state.get("w_relative", w_relative)
 w_zero = st.session_state.get("w_zero", w_zero)
@@ -636,6 +637,57 @@ month_customers = customer_monthly_sel.groupby(["ACCOUNT_NUMBER","METER_NUMBER",
 })
 month_customers = month_customers.rename(columns={"billed_kwh":"billed_kwh_total","theft_probability":"theft_probability_avg"})
 
+# DT Theft Heatmap
+st.subheader("DT Theft Probability Heatmap")
+if selected_feeder:
+    try:
+        dt_filtered = dt_merged_monthly[dt_merged_monthly["Feeder"] == selected_feeder]
+        if dt_filtered.empty:
+            st.warning("No DT monthly data for this feeder.")
+        else:
+            dt_scores = dt_filtered.groupby("DT_Short_Name")["dt_billing_efficiency"].mean().reset_index()
+            dt_scores["theft_probability"] = 1 - dt_scores["dt_billing_efficiency"]
+            order = dt_scores.sort_values("theft_probability", ascending=False)["DT_Short_Name"].tolist()
+            dt_pivot = dt_filtered.pivot_table(index="DT_Short_Name", columns="month", values="dt_billing_efficiency", aggfunc="mean").reindex(index=order, columns=selected_months)
+            if not dt_pivot.empty:
+                plt.figure(figsize=(10, max(4, len(dt_pivot)/2)))
+                sns.heatmap(1 - dt_pivot, vmin=0, vmax=1, cmap="Reds", cbar_kws={"label":"DT Theft Probability"})
+                plt.title(f"DT Theft Probability for {selected_feeder_short} ({start_month} to {end_month})")
+                st.pyplot(plt.gcf())
+                plt.close()
+            else:
+                st.warning("No DT pivot data.")
+    except Exception as e:
+        st.error(f"DT heatmap failed: {e}")
+
+# Customer Heatmap
+st.subheader("Customer Theft Probability Heatmap")
+if selected_dt_short:
+    try:
+        filtered_customers = customer_monthly_sel[customer_monthly_sel["DT_Short_Name"] == selected_dt_short]
+        if filtered_customers.empty:
+            st.warning("No customer monthly data for this DT.")
+        else:
+            customer_scores = filtered_customers.groupby("ACCOUNT_NUMBER")["theft_probability"].mean().reset_index()
+            customer_order = customer_scores.sort_values("theft_probability", ascending=False)["ACCOUNT_NUMBER"].tolist()
+            num_customers = st.number_input("Number of high-risk customers for Heatmap (0 for all)", min_value=0, value=min(10, len(customer_order)), step=1)
+            if num_customers > 0:
+                chosen = customer_order[:num_customers]
+                filtered_for_heatmap = filtered_customers[filtered_customers["ACCOUNT_NUMBER"].isin(chosen)]
+            else:
+                filtered_for_heatmap = filtered_customers
+            pivot_data = filtered_for_heatmap.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean").reindex(index=customer_order[:num_customers or None], columns=selected_months)
+            if not pivot_data.empty:
+                plt.figure(figsize=(10, max(4, len(pivot_data)/2)))
+                sns.heatmap(pivot_data, vmin=0, vmax=1, cmap="Reds", cbar_kws={"label":"Theft Probability"})
+                plt.title(f"Theft Probability for {selected_dt_short} ({selected_feeder_short})")
+                st.pyplot(plt.gcf())
+                plt.close()
+            else:
+                st.warning("No data to render heatmap.")
+    except Exception as e:
+        st.error(f"Customer heatmap failed: {e}")
+
 # Display customer list
 st.subheader(f"Customers under {selected_dt_short} ({selected_feeder_short}, {start_month} to {end_month})")
 if selected_dt_short:
@@ -658,57 +710,6 @@ if selected_dt_short:
             "dt_relative_usage_score":"{:.3f}",
             "zero_counter_score":"{:.3f}"
         }), use_container_width=True)
-
-# Customer Heatmap
-st.subheader("Theft Probability Heatmap by Customer")
-if selected_dt_short:
-    try:
-        filtered_customers = customer_monthly_sel[customer_monthly_sel["DT_Short_Name"] == selected_dt_short]
-        if filtered_customers.empty:
-            st.warning("No customer monthly data for this DT.")
-        else:
-            customer_scores = filtered_customers.groupby("ACCOUNT_NUMBER")["theft_probability"].mean().reset_index()
-            customer_order = customer_scores.sort_values("theft_probability", ascending=False)["ACCOUNT_NUMBER"].tolist()
-            num_customers = st.number_input("Number of high-risk customers for Heatmap (0 for all)", min_value=0, value=min(10, len(customer_order)), step=1)
-            if num_customers > 0:
-                chosen = customer_order[:num_customers]
-                filtered_for_heatmap = filtered_customers[filtered_customers["ACCOUNT_NUMBER"].isin(chosen)]
-            else:
-                filtered_for_heatmap = filtered_customers
-            pivot_data = filtered_for_heatmap.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean").reindex(index=customer_order[:num_customers or None], columns=selected_months)
-            if not pivot_data.empty:
-                plt.figure(figsize=(10, max(4, len(pivot_data)/2)))
-                sns.heatmap(pivot_data, vmin=0, vmax=1, cbar_kws={"label":"Theft Probability"})
-                plt.title(f"Theft Probability for {selected_dt_short} ({selected_feeder_short})")
-                st.pyplot(plt.gcf())
-                plt.close()
-            else:
-                st.warning("No data to render heatmap.")
-    except Exception as e:
-        st.error(f"Customer heatmap failed: {e}")
-
-# DT Theft Heatmap
-st.subheader("DT Theft Probability Heatmap")
-if selected_feeder:
-    try:
-        dt_filtered = dt_merged_monthly[dt_merged_monthly["Feeder"] == selected_feeder]
-        if dt_filtered.empty:
-            st.warning("No DT monthly data for this feeder.")
-        else:
-            dt_scores = dt_filtered.groupby("DT_Short_Name")["dt_billing_efficiency"].mean().reset_index()
-            dt_scores["theft_probability"] = 1 - dt_scores["dt_billing_efficiency"]
-            order = dt_scores.sort_values("theft_probability", ascending=False)["DT_Short_Name"].tolist()
-            dt_pivot = dt_filtered.pivot_table(index="DT_Short_Name", columns="month", values="dt_billing_efficiency", aggfunc="mean").reindex(index=order, columns=selected_months)
-            if not dt_pivot.empty:
-                plt.figure(figsize=(10, max(4, len(dt_pivot)/2)))
-                sns.heatmap(1 - dt_pivot, vmin=0, vmax=1, cbar_kws={"label":"DT Theft Probability"})
-                plt.title(f"DT Theft Probability for {selected_feeder_short} ({start_month} to {end_month})")
-                st.pyplot(plt.gcf())
-                plt.close()
-            else:
-                st.warning("No DT pivot data.")
-    except Exception as e:
-        st.error(f"DT heatmap failed: {e}")
 
 # Feeder Summary
 st.subheader("Feeder Summary")
