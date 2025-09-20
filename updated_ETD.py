@@ -495,6 +495,11 @@ if not dt_escal.empty:
 else:
     dt_escal = pd.DataFrame({"DT Nomenclature": dt_df["NAME_OF_DT"], "location_trust_score": 0.0})
 
+# Debug: Check dt_escal contents
+if "DT Nomenclature" not in dt_escal.columns or "location_trust_score" not in dt_escal.columns:
+    st.warning("dt_escal missing required columns. Using default location_trust_score of 0.0 for DTs.")
+    dt_escal = pd.DataFrame({"DT Nomenclature": dt_df["NAME_OF_DT"], "location_trust_score": 0.0})
+
 # Optimize weights
 if st.button("Optimize Customer-Level Weights for Escalations"):
     try:
@@ -608,7 +613,19 @@ feeder_merged["feeder_billing_efficiency"] = (feeder_merged["total_billed_kwh"] 
 feeder_merged["location_trust_score"] = feeder_merged.merge(feeder_escal[["Feeder", "location_trust_score"]], on="Feeder", how="left")["location_trust_score"].fillna(0.0)
 customer_monthly_sel = customer_monthly_sel.merge(feeder_merged[["Feeder", "feeder_billing_efficiency", "location_trust_score"]], on="Feeder", how="left")
 customer_monthly_sel = customer_monthly_sel.merge(dt_merged[["NAME_OF_DT", "dt_billing_efficiency"]], left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
-customer_monthly_sel["location_trust_score_dt"] = customer_monthly_sel.merge(dt_escal[["DT Nomenclature", "location_trust_score"]], left_on="NAME_OF_DT", right_on="DT Nomenclature", how="left")["location_trust_score"].fillna(0.0)
+
+# Debug: Check merge with dt_escal
+if "DT Nomenclature" in dt_escal.columns and "location_trust_score" in dt_escal.columns:
+    merged_dt = customer_monthly_sel.merge(dt_escal[["DT Nomenclature", "location_trust_score"]], left_on="NAME_OF_DT", right_on="DT Nomenclature", how="left")
+    if "location_trust_score" in merged_dt.columns:
+        customer_monthly_sel["location_trust_score_dt"] = merged_dt["location_trust_score"].fillna(0.0)
+    else:
+        st.warning("Merge with dt_escal did not produce location_trust_score. Setting location_trust_score_dt to 0.0.")
+        customer_monthly_sel["location_trust_score_dt"] = 0.0
+else:
+    st.warning("dt_escal missing required columns for merge. Setting location_trust_score_dt to 0.0.")
+    customer_monthly_sel["location_trust_score_dt"] = 0.0
+
 customer_monthly_sel["location_trust_score_feeder"] = customer_monthly_sel["location_trust_score"].fillna(0.0)
 customer_monthly_sel["location_trust_score"] = customer_monthly_sel["location_trust_score_dt"].combine_first(customer_monthly_sel["location_trust_score_feeder"]).fillna(0.0)
 customer_monthly_sel["pattern_deviation_score"] = customer_monthly_sel["pattern_deviation_score"].fillna(0.0)
@@ -809,4 +826,4 @@ except Exception as e:
     st.error(f"Energy not billed summary failed: {e}")
 
 # Footer
-st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025. Powered By SniffIt🐶")
+st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
