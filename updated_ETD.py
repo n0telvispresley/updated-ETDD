@@ -731,6 +731,17 @@ if st.button("Optimize Customer-Level Weights for Escalations"):
     base_relative = st.session_state.get("w_relative", w_relative)
     base_zero = st.session_state.get("w_zero", w_zero)
     best_combo, pre_mean, post_mean = optimize_customer_weights_for_escalations(customer_monthly_all, escalation_accounts, w_feeder, w_dt, w_location, base_pattern, base_relative, base_zero)
+    st.session_state.update({
+    "w_pattern": float(wp_n),
+    "w_relative": float(wr_n),
+    "w_zero": float(wz_n),
+})
+msg = f"Optimizer applied pattern={wp_n:.3f}, relative={wr_n:.3f}, zero={wz_n:.3f}."
+if pre_mean is not None and post_mean is not None:
+    msg += f" Escalation avg theft improved {pre_mean:.3f} → {post_mean:.3f}."
+st.success(msg)
+st.info("Sliders updated — move them slightly or regenerate to see new theft scores.")
+
     if best_combo is not None:
         # apply best combo to session state and rerun so sliders show updated values
         st.session_state.w_pattern = float(best_combo[0])
@@ -740,7 +751,6 @@ if st.button("Optimize Customer-Level Weights for Escalations"):
         if pre_mean is not None and post_mean is not None:
             msg += f" Escalation avg theft improved {pre_mean:.3f} → {post_mean:.3f}."
         st.success(msg)
-        st.experimental_rerun()
     else:
         st.info("Optimizer found no improvement or no escalation accounts present.")
 
@@ -981,7 +991,12 @@ if st.button("Generate Escalations Report"):
     try:
         report_df = generate_escalations_report(ppm_df, ppd_df, escalations_df, customer_monthly_all, theft_by_account.reset_index(drop=True))
         st.success(f"Escalations report generated: {len(report_df)} records")
-        st.dataframe(report_df.fillna("").style.format({"Theft Probability (avg)": "{:.3f}"}), use_container_width=True)
+        styled_report = report_df.fillna("")
+if "Theft Probability (avg)" in styled_report.columns:
+    styled_report["Theft Probability (avg)"] = pd.to_numeric(styled_report["Theft Probability (avg)"], errors="coerce")
+    styled_report = styled_report.style.format({"Theft Probability (avg)": "{:.3f}"})
+st.dataframe(styled_report, use_container_width=True)
+
         # Excel download
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -993,3 +1008,4 @@ if st.button("Generate Escalations Report"):
 
 # Footer
 st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
+
