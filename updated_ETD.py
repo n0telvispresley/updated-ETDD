@@ -742,7 +742,7 @@ if pre_mean is not None and post_mean is not None:
 st.success(msg)
 st.info("Sliders updated — move them slightly or regenerate to see new theft scores.")
 
-    if best_combo is not None:
+if best_combo is not None:
         # apply best combo to session state and rerun so sliders show updated values
         st.session_state.w_pattern = float(best_combo[0])
         st.session_state.w_relative = float(best_combo[1])
