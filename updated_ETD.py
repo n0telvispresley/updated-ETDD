@@ -191,9 +191,9 @@ def generate_escalations_report(ppm_df, ppd_df, escalations_df, customer_scores_
     return pd.DataFrame(reports)
 
 # Begin main app logic
-st.title("Ikeja Electric Energy Theft Detection Dashboard")
+st.title("SniffIt🐶")
 
-st.subheader("Upload Excel File")
+st.subheader("Energy Theft Detector")
 uploaded_file = st.file_uploader("Choose an Excel file (.xlsx)", type=["xlsx"])
 if uploaded_file is None:
     st.warning("Please upload an Excel file to proceed.")
@@ -605,12 +605,11 @@ feeder_agg_billed = dt_merged.groupby("Feeder", as_index=False)["total_billed_kw
 feeder_merged = feeder_agg.merge(feeder_agg_billed, on="Feeder", how="left")
 feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
 feeder_merged["feeder_billing_efficiency"] = (feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0,1)).clip(0,1)
-feeder_merged = feeder_merged.merge(feeder_escal[["Feeder", "location_trust_score"]], on="Feeder", how="left")
-feeder_merged["location_trust_score"] = feeder_merged["location_trust_score"].fillna(0.0)
+feeder_merged["location_trust_score"] = feeder_merged.merge(feeder_escal[["Feeder", "location_trust_score"]], on="Feeder", how="left")["location_trust_score"].fillna(0.0)
 customer_monthly_sel = customer_monthly_sel.merge(feeder_merged[["Feeder", "feeder_billing_efficiency", "location_trust_score"]], on="Feeder", how="left")
 customer_monthly_sel = customer_monthly_sel.merge(dt_merged[["NAME_OF_DT", "dt_billing_efficiency"]], left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
-customer_monthly_sel = customer_monthly_sel.merge(dt_escal[["DT Nomenclature", "location_trust_score"]], left_on="NAME_OF_DT", right_on="DT Nomenclature", how="left")
-customer_monthly_sel = customer_monthly_sel.merge(feeder_escal[["Feeder", "location_trust_score"]], on="Feeder", how="left", suffixes=("_dt", "_feeder"))
+customer_monthly_sel["location_trust_score_dt"] = customer_monthly_sel.merge(dt_escal[["DT Nomenclature", "location_trust_score"]], left_on="NAME_OF_DT", right_on="DT Nomenclature", how="left")["location_trust_score"].fillna(0.0)
+customer_monthly_sel["location_trust_score_feeder"] = customer_monthly_sel["location_trust_score"].fillna(0.0)
 customer_monthly_sel["location_trust_score"] = customer_monthly_sel["location_trust_score_dt"].combine_first(customer_monthly_sel["location_trust_score_feeder"]).fillna(0.0)
 customer_monthly_sel["pattern_deviation_score"] = customer_monthly_sel["pattern_deviation_score"].fillna(0.0)
 customer_monthly_sel["zero_counter_score"] = customer_monthly_sel["zero_counter_score"].fillna(0.0)
@@ -810,4 +809,4 @@ except Exception as e:
     st.error(f"Energy not billed summary failed: {e}")
 
 # Footer
-st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
+st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025. Powered By SniffIt🐶")
