@@ -4,6 +4,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import seaborn as sns
 import re
+import io
 
 # Set Streamlit page config
 st.set_page_config(page_title="IE Energy Theft Detection Dashboard", layout="wide")
@@ -724,68 +725,51 @@ else:
     st.info("Generate the customer list first to enable export.")
 
 
-# Function to generate the report
 def generate_escalations_report(prepaid_df, postpaid_df, escalations_df):
-    account_numbers = escalations_df['Account No'].astype(str).tolist()
-    report_rows = []
+    # Combine PPM + PPD
+    customer_df = pd.concat([prepaid_df, postpaid_df], ignore_index=True)
+    customer_df['ACCOUNT_NUMBER'] = customer_df['ACCOUNT_NUMBER'].astype(str).str.strip()
+    escalations_df['Account No'] = escalations_df['Account No'].astype(str).str.strip()
 
-    # Combine prepaid and postpaid for easy searching
-    customers_df = pd.concat([prepaid_df, postpaid_df], ignore_index=True)
+    # Columns to collect (ensure they exist)
+    monthly_cols = [col for col in customer_df.columns if "(kWh)" in col]
+    required_cols = ['ACCOUNT_NUMBER', 'CUSTOMER_NAME', 'NAME_OF_FEEDER', 'NAME_OF_DT', 'theft_score'] + monthly_cols
 
-    for acc in account_numbers:
-        matched = customers_df[customers_df['ACCOUNT_NUMBER'].astype(str) == acc]
+    results = []
+    not_found = []
 
-        if matched.empty:
-            report_rows.append({
-                "Account No": acc,
-                "Customer Name": "Not Found",
-                "Feeder": "Not Found",
-                "DT": "Not Found",
-                "Status": "Not Found"
-            })
+    for acct in escalations_df['Account No']:
+        match = customer_df[customer_df['ACCOUNT_NUMBER'] == acct]
+        if not match.empty:
+            results.append(match[required_cols])
         else:
-            for _, row in matched.iterrows():
-                data = {
-                    "Account No": acc,
-                    "Customer Name": row.get("CUSTOMER_NAME", ""),
-                    "Feeder": row.get("FEEDER", ""),
-                    "DT": row.get("DT_NOMENCLATURE", ""),
-                    "Theft Score": row.get("THEFT_SCORE", ""),
-                    "Status": "Found"
-                }
-                
-                # Add energy readings dynamically (whatever months exist)
-                for col in customers_df.columns:
-                    if col.lower().startswith("energy_") or col.lower() in ["jan", "feb", "mar", "apr", "may", "jun", 
-                                                                          "jul", "aug", "sep", "oct", "nov", "dec"]:
-                        data[col] = row.get(col, "")
-                
-                report_rows.append(data)
+            not_found.append({"ACCOUNT_NUMBER": acct, "CUSTOMER_NAME": "NOT FOUND"})
 
-    return pd.DataFrame(report_rows)
+    report_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame(columns=required_cols)
+    if not_found:
+        report_df = pd.concat([report_df, pd.DataFrame(not_found)], ignore_index=True)
 
+    return report_df
 
-st.subheader("Escalations Report")
-
+# --- STREAMLIT BUTTON & DOWNLOAD ---
 if st.button("Generate Escalations Report"):
-    report_df = generate_escalations_report(prepaid_df, postpaid_df, escalations_df)
+    report_df = generate_escalations_report(ppm_df, ppd_df, escalations_df)
 
-    st.success(f"Report generated! {len(report_df)} records processed.")
-    st.dataframe(report_df, use_container_width=True)
-
-    # Prepare file for download
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        report_df.to_excel(writer, index=False, sheet_name="Escalations Report")
-    buffer.seek(0)
-
-    st.download_button(
-        label="📥 Download Escalations Report",
-        data=buffer,
-        file_name="Escalations_Report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    if report_df.empty:
+        st.warning("No matching customers found in Escalations list.")
+    else:
+        st.success(f"Generated report for {len(report_df)} accounts")
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            report_df.to_excel(writer, index=False, sheet_name="Escalations Report")
+        st.download_button(
+            label="Download Escalations Report",
+            data=buffer.getvalue(),
+            file_name="escalations_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 # Footer
 st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
+
 
