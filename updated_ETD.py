@@ -619,7 +619,7 @@ except Exception as e:
 # DT Summary
 st.subheader("DT Summary")
 try:
-    dt_summary_show = dt_merged.groupby(["DT_Short_Name"]).agg({
+    dt_summary_show = dt_merged.groupby(["NAME_OF_DT", "DT_Short_Name"]).agg({
         "total_dt_kwh": "sum",
         "total_billed_kwh": "sum",
         "dt_billing_efficiency": "mean"
@@ -681,26 +681,21 @@ try:
     unbilled_summary = feeder_merged[["Feeder", "Feeder_Short", "feeder_energy_kwh", "total_billed_kwh", "Tariff_Rate"]].copy()
     unbilled_summary["unbilled_kwh"] = unbilled_summary["feeder_energy_kwh"] - unbilled_summary["total_billed_kwh"]
     unbilled_summary["unbilled_kwh"] = unbilled_summary["unbilled_kwh"].clip(lower=0)
-    unbilled_summary["monetary_loss_ngn"] = unbilled_summary["unbilled_kwh"] * unbilled_summary["Tariff_Rate"]
-    total_unbilled_kwh = unbilled_summary["unbilled_kwh"].sum()
-    total_monetary_loss = unbilled_summary["monetary_loss_ngn"].sum()
-    total_row = pd.DataFrame({
-        "Feeder": ["Total"],
-        "Feeder_Short": ["Total"],
-        "feeder_energy_kwh": [np.nan],
-        "total_billed_kwh": [np.nan],
-        "Tariff_Rate": [np.nan],
-        "unbilled_kwh": [total_unbilled_kwh],
-        "monetary_loss_ngn": [total_monetary_loss]
-    })
-    unbilled_summary = pd.concat([unbilled_summary, total_row], ignore_index=True)
-    st.dataframe(unbilled_summary.style.format({
-        "feeder_energy_kwh": "{:.2f}",
-        "total_billed_kwh": "{:.2f}",
-        "Tariff_Rate": "{:.2f}",
-        "unbilled_kwh": "{:.2f}",
-        "monetary_loss_ngn": "{:.2f}"
-    }, na_rep=""), use_container_width=True)
+    unbilled_summary["money_collected_ngn"] = unbilled_summary["total_billed_kwh"] * unbilled_summary["Tariff_Rate"]
+    unbilled_summary["money_lost_ngn"] = unbilled_summary["unbilled_kwh"] * unbilled_summary["Tariff_Rate"]
+    total_energy_billed = unbilled_summary["total_billed_kwh"].sum()
+    total_energy_not_billed = unbilled_summary["unbilled_kwh"].sum()
+    total_money_collected = unbilled_summary["money_collected_ngn"].sum()
+    total_money_lost = unbilled_summary["money_lost_ngn"].sum()
+    cumulative_billing_efficiency = total_energy_billed / (total_energy_billed + total_energy_not_billed) if (total_energy_billed + total_energy_not_billed) > 0 else 0.0
+    st.markdown(f"""
+    **Summary for {start_month} to {end_month}:**
+    - **Total Energy Billed**: {total_energy_billed:.2f} kWh
+    - **Total Energy Not Billed**: {total_energy_not_billed:.2f} kWh
+    - **Money Collected**: ₦{total_money_collected:.2f}
+    - **Money Lost**: ₦{total_money_lost:.2f}
+    - **Cumulative Billing Efficiency**: {cumulative_billing_efficiency:.3f}
+    """)
 except Exception as e:
     st.error(f"Energy not billed summary failed: {e}")
 
