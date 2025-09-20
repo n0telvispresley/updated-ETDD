@@ -448,7 +448,7 @@ else:
     dt_escal = pd.DataFrame({"DT Nomenclature": dt_df["NAME_OF_DT"], "location_trust_score": 0.0})
 
 # Debug: Check dt_escal contents
-if "DT Nomenclature" not in dt_escal.columns or "location_trust_score" not in dt_escal.columns:
+if "DT Nomenclature" not in dt_escal.columns or "location_trust_score" in dt_escal.columns:
     st.warning("dt_escal missing required columns. Using default location_trust_score of 0.0 for DTs.")
     dt_escal = pd.DataFrame({"DT Nomenclature": dt_df["NAME_OF_DT"], "location_trust_score": 0.0})
 
@@ -461,8 +461,8 @@ dt_relative_df_sel = calculate_dt_relative_usage(customer_monthly_sel)
 customer_monthly_sel = customer_monthly_sel.merge(pattern_df_full, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
 customer_monthly_sel = customer_monthly_sel.merge(zero_df_full, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
 customer_monthly_sel = customer_monthly_sel.merge(dt_relative_df_sel, on="ACCOUNT_NUMBER", how="left")
-customer_billed_monthly = customer_monthly_sel.groupby(["NAME_OF_DT", "month"], as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
-dt_merged_monthly = dt_agg_monthly.merge(customer_billed_monthly, left_on=["NAME_OF_DT", "month"], right_on=["NAME_OF_DT", "month"], how="left")
+customer_billed_monthly = customer_monthly_sel.groupby(["NAME_OF_DT", "DT_Short_Name", "month"], as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
+dt_merged_monthly = dt_agg_monthly.merge(customer_billed_monthly, left_on=["NAME_OF_DT", "DT_Short_Name", "month"], right_on=["NAME_OF_DT", "DT_Short_Name", "month"], how="left")
 dt_merged_monthly["customer_billed_kwh"] = dt_merged_monthly["customer_billed_kwh"].fillna(0)
 dt_merged_monthly["total_billed_kwh"] = np.where(
     dt_merged_monthly.get("Ownership", "").str.strip().str.upper().isin(["PRIVATE"]),
@@ -479,8 +479,8 @@ feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
 feeder_monthly = feeder_monthly[feeder_monthly["month"].isin(selected_months)]
 feeder_agg = feeder_monthly.groupby(["Feeder", "Feeder_Short", "Tariff_Rate"], as_index=False)["feeder_energy_kwh"].sum()
 dt_agg_sum = dt_merged_monthly.groupby(["NAME_OF_DT", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership", "Connection Status", "total_energy_kwh"], as_index=False)["total_dt_kwh"].sum()
-cust_agg_total = customer_monthly_sel.groupby(["NAME_OF_DT", "Feeder", "DT_Short_Name"], as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
-dt_merged = dt_agg_sum.merge(cust_agg_total, left_on=["NAME_OF_DT", "Feeder"], right_on=["NAME_OF_DT", "Feeder"], how="left")
+cust_agg_total = customer_monthly_sel.groupby(["NAME_OF_DT", "DT_Short_Name", "Feeder"], as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
+dt_merged = dt_agg_sum.merge(cust_agg_total, left_on=["NAME_OF_DT", "DT_Short_Name", "Feeder"], right_on=["NAME_OF_DT", "DT_Short_Name", "Feeder"], how="left")
 dt_merged["customer_billed_kwh"] = dt_merged["customer_billed_kwh"].fillna(0)
 dt_merged["total_billed_kwh"] = np.where(dt_merged.get("Ownership", "").str.strip().str.upper().isin(["PRIVATE"]), dt_merged["total_dt_kwh"], dt_merged["customer_billed_kwh"])
 dt_merged["dt_billing_efficiency"] = np.where((dt_merged.get("Connection Status", "").str.strip().str.upper()=="NOT CONNECTED") & (dt_merged["total_energy_kwh"]>0), 0.0, (dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0,1)).clip(0,1))
@@ -490,7 +490,7 @@ feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
 feeder_merged["feeder_billing_efficiency"] = (feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0,1)).clip(0,1)
 feeder_merged["location_trust_score"] = feeder_merged.merge(feeder_escal[["Feeder", "location_trust_score"]], on="Feeder", how="left")["location_trust_score"].fillna(0.0)
 customer_monthly_sel = customer_monthly_sel.merge(feeder_merged[["Feeder", "feeder_billing_efficiency", "location_trust_score"]], on="Feeder", how="left")
-customer_monthly_sel = customer_monthly_sel.merge(dt_merged[["NAME_OF_DT", "dt_billing_efficiency"]], left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
+customer_monthly_sel = customer_monthly_sel.merge(dt_merged[["NAME_OF_DT", "DT_Short_Name", "dt_billing_efficiency"]], left_on=["NAME_OF_DT", "DT_Short_Name"], right_on=["NAME_OF_DT", "DT_Short_Name"], how="left")
 
 # Debug: Check merge with dt_escal
 if "DT Nomenclature" in dt_escal.columns and "location_trust_score" in dt_escal.columns:
@@ -619,11 +619,22 @@ except Exception as e:
 # DT Summary
 st.subheader("DT Summary")
 try:
-    dt_summary_show = dt_merged.groupby(["NAME_OF_DT", "DT_Short_Name"]).agg({
+    # Simplified DT summary to ensure DT_Short_Name is preserved
+    dt_summary_show = dt_agg_monthly.groupby(["NAME_OF_DT", "DT_Short_Name"]).agg({
         "total_dt_kwh": "sum",
         "total_billed_kwh": "sum",
         "dt_billing_efficiency": "mean"
     }).reset_index()
+    if "total_billed_kwh" not in dt_summary_show.columns:
+        # Calculate total_billed_kwh if not already computed
+        cust_agg = customer_monthly_sel.groupby(["NAME_OF_DT", "DT_Short_Name"])["billed_kwh"].sum().reset_index().rename(columns={"billed_kwh": "total_billed_kwh"})
+        dt_summary_show = dt_summary_show.merge(cust_agg, on=["NAME_OF_DT", "DT_Short_Name"], how="left")
+        dt_summary_show["total_billed_kwh"] = dt_summary_show["total_billed_kwh"].fillna(0)
+        dt_summary_show["dt_billing_efficiency"] = np.where(
+            (dt_summary_show["total_dt_kwh"] == 0),
+            0.0,
+            (dt_summary_show["total_billed_kwh"] / dt_summary_show["total_dt_kwh"]).clip(0, 1)
+        )
     st.dataframe(dt_summary_show.style.format({
         "total_dt_kwh": "{:.2f}",
         "total_billed_kwh": "{:.2f}",
@@ -675,8 +686,8 @@ try:
 except Exception as e:
     st.error(f"Failed to generate escalations report: {e}")
 
-# Energy Not Billed Summary
-st.subheader("Energy Not Billed Summary Across All Feeders")
+# Quick Performance Metrics
+st.subheader("Quick Performance Metrics")
 try:
     unbilled_summary = feeder_merged[["Feeder", "Feeder_Short", "feeder_energy_kwh", "total_billed_kwh", "Tariff_Rate"]].copy()
     unbilled_summary["unbilled_kwh"] = unbilled_summary["feeder_energy_kwh"] - unbilled_summary["total_billed_kwh"]
@@ -688,16 +699,25 @@ try:
     total_money_collected = unbilled_summary["money_collected_ngn"].sum()
     total_money_lost = unbilled_summary["money_lost_ngn"].sum()
     cumulative_billing_efficiency = total_energy_billed / (total_energy_billed + total_energy_not_billed) if (total_energy_billed + total_energy_not_billed) > 0 else 0.0
-    st.markdown(f"""
-    **Summary for {start_month} to {end_month}:**
-    - **Total Energy Billed**: {total_energy_billed:.2f} kWh
-    - **Total Energy Not Billed**: {total_energy_not_billed:.2f} kWh
-    - **Money Collected**: ₦{total_money_collected:.2f}
-    - **Money Lost**: ₦{total_money_lost:.2f}
-    - **Cumulative Billing Efficiency**: {cumulative_billing_efficiency:.3f}
-    """)
+    color = "red" if cumulative_billing_efficiency < 0.8 else "green"
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.metric("Total Energy Billed (kWh)", f"{total_energy_billed:.2f}", delta_color="off")
+        st.markdown(f"<style>.stMetric {{ color: {color}; }}</style>", unsafe_allow_html=True)
+    with col2:
+        st.metric("Total Energy Not Billed (kWh)", f"{total_energy_not_billed:.2f}", delta_color="off")
+        st.markdown(f"<style>.stMetric {{ color: {color}; }}</style>", unsafe_allow_html=True)
+    with col3:
+        st.metric("Money Collected (NGN)", f"₦{total_money_collected:.2f}", delta_color="off")
+        st.markdown(f"<style>.stMetric {{ color: {color}; }}</style>", unsafe_allow_html=True)
+    with col4:
+        st.metric("Money Lost (NGN)", f"₦{total_money_lost:.2f}", delta_color="off")
+        st.markdown(f"<style>.stMetric {{ color: {color}; }}</style>", unsafe_allow_html=True)
+    with col5:
+        st.metric("Cumulative Billing Efficiency", f"{cumulative_billing_efficiency:.3f}", delta_color="off")
+        st.markdown(f"<style>.stMetric {{ color: {color}; }}</style>", unsafe_allow_html=True)
 except Exception as e:
-    st.error(f"Energy not billed summary failed: {e}")
+    st.error(f"Quick Performance Metrics failed: {e}")
 
 # Footer
-st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
+st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. SniffIt🐶 2025.")
