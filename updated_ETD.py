@@ -254,9 +254,6 @@ escalations_df = sheets.get("Escalations")
 if escalations_df is None:
     escalations_df = _get_sheet_case_insensitive(sheets, "Escalations")
 
-# ... (REST OF YOUR CODE BELOW REMAINS EXACTLY AS IN YOUR LAST MESSAGE)
-
-
 # Check required sheets
 if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_df, escalations_df]):
     st.error("One or more required sheets missing. Check that your Excel file has these sheets: Feeder Data, Transformer Data, Customer Data_PPM, Customer Data_PPD, Feeder Band, Customer Tariffs, Escalations.")
@@ -330,6 +327,10 @@ for col, df in name_normalizations:
     if col in df.columns:
         df[col] = df[col].apply(normalize_name)
 
+# Create Feeder_Short for feeder_df
+if "Feeder" in feeder_df.columns:
+    feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(get_short_name)
+
 # Combine customers
 ppm_df["Billing_Type"] = "PPM"
 ppd_df["Billing_Type"] = "PPD"
@@ -340,6 +341,10 @@ customer_df = add_feeder_column_safe(customer_df, "NAME_OF_DT")
 dt_df["NAME_OF_DT"] = dt_df.get("New Unique DT Nomenclature", dt_df.get("NAME_OF_DT", ""))
 dt_df["Feeder"] = dt_df["NAME_OF_DT"].apply(lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-"))>=3 else x)
 dt_df["Feeder"] = dt_df["Feeder"].apply(normalize_name)
+
+# Merge Tariff_Rate from feeder_df to dt_df
+dt_df = dt_df.merge(feeder_df[["Feeder", "Tariff_Rate"]], on="Feeder", how="left")
+dt_df["Tariff_Rate"] = dt_df["Tariff_Rate"].fillna(209.5)
 
 # Compute band rates and map feeders -> tariff rates (same approach as original)
 # Ensure band_df has Feeder and BAND
@@ -836,4 +841,3 @@ except Exception as e:
 
 # Footer
 st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
-
