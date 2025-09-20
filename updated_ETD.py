@@ -46,9 +46,7 @@ def add_feeder_column_safe(df, name_of_dt_col="NAME_OF_DT"):
     df["Feeder"] = df["Feeder"].apply(normalize_name)
     return df
 
-# Improved pattern deviation:
-# - Ignore zeros when calculating max
-# - Score = fraction of months (of all months) where consumption < 60% of max_nonzero (if max_nonzero==0 -> suspicious)
+# Improved pattern deviation calculation
 def calculate_pattern_deviation(df, id_col, value_cols):
     results = []
     valid_cols = [c for c in value_cols if c in df.columns]
@@ -56,15 +54,15 @@ def calculate_pattern_deviation(df, id_col, value_cols):
         values = group[valid_cols].iloc[0].values.astype(float)
         nonzero = values[values > 0]
         if len(nonzero) == 0:
-            score = 1.0  # always suspicious if all zeros
+            score = 1.0
         else:
             max_nonzero = nonzero.max()
-            below = np.sum(values < 0.6 * max_nonzero)  # counts zeros too
+            below = np.sum(values < 0.6 * max_nonzero)
             score = below / len(valid_cols)
-        results.append({ "id": id_val, "pattern_deviation_score": min(score, 1.0) })
+        results.append({"id": id_val, "pattern_deviation_score": min(score, 1.0)})
     return pd.DataFrame(results)
 
-# Zero-frequency score: fraction of months with zero reading
+# Zero frequency score
 def calculate_zero_counter(df, id_col, value_cols):
     results = []
     valid_cols = [c for c in value_cols if c in df.columns]
@@ -72,43 +70,29 @@ def calculate_zero_counter(df, id_col, value_cols):
         values = group[valid_cols].iloc[0].values.astype(float)
         zeros = np.sum(values == 0)
         score = zeros / len(valid_cols) if len(valid_cols) > 0 else 0.0
-        results.append({ "id": id_val, "zero_counter_score": min(score, 1.0) })
+        results.append({"id": id_val, "zero_counter_score": min(score, 1.0)})
     return pd.DataFrame(results)
 
-# DT relative usage (ignore zero customer months when computing DT averages)
+# DT relative usage
 def calculate_dt_relative_usage(customer_monthly):
-    # customer_monthly: rows per account per month with billed_kwh, NAME_OF_DT
-    # Aggregate total billed_kwh per account across selected months (customer agg)
     cust_sum = customer_monthly.groupby(["ACCOUNT_NUMBER", "NAME_OF_DT"], as_index=False)["billed_kwh"].sum()
-    # DT averages: compute average only across non-zero customer sums per DT
-    # First compute per-customer sums (above), then filter >0 and compute mean per DT
     dt_avg = cust_sum[cust_sum["billed_kwh"] > 0].groupby("NAME_OF_DT", as_index=False)["billed_kwh"].mean().rename(columns={"billed_kwh": "dt_avg_kwh"})
     cust_sum = cust_sum.merge(dt_avg, on="NAME_OF_DT", how="left")
     cust_sum["relative_ratio"] = np.where(cust_sum["dt_avg_kwh"].fillna(0) == 0, 0.5, cust_sum["billed_kwh"] / cust_sum["dt_avg_kwh"])
     def _score(row):
         if pd.isna(row["dt_avg_kwh"]) or row["dt_avg_kwh"] == 0:
-            # If dt average is missing or zero, give middle score based on usage
             return 0.5 if row["billed_kwh"] == 0 else 0.1
         if row["billed_kwh"] < 0.3 * row["dt_avg_kwh"]:
             return 0.9
         if row["billed_kwh"] > 0.7 * row["dt_avg_kwh"]:
             return 0.1
-        # linear interpolation between 0.1 and 0.9 across [0.3,0.7]
         ratio = row["billed_kwh"] / row["dt_avg_kwh"]
         return 0.1 + (0.9 - 0.1) * (0.7 - ratio) / (0.7 - 0.3)
     cust_sum["dt_relative_usage_score"] = cust_sum.apply(_score, axis=1)
     return cust_sum[["ACCOUNT_NUMBER", "dt_relative_usage_score"]]
 
-# Optimizer: brute force over pattern/relative/zero weights in 0.05 steps (as requested)
+# Optimizer
 def optimize_customer_weights(customer_df_for_opt, escalations_df, w_feeder, w_dt, w_location, step=0.05):
-    # customer_df_for_opt must contain per-customer aggregated features:
-    # - ACCOUNT_NUMBER
-    # - feeder_billing_efficiency
-    # - dt_billing_efficiency
-    # - location_trust_score
-    # - pattern_deviation_score
-    # - dt_relative_usage_score
-    # - zero_counter_score
     accounts = set(escalations_df["Account No"].astype(str))
     sub = customer_df_for_opt[customer_df_for_opt["ACCOUNT_NUMBER"].astype(str).isin(accounts)].copy()
     if sub.empty:
@@ -120,7 +104,6 @@ def optimize_customer_weights(customer_df_for_opt, escalations_df, w_feeder, w_d
     best_combo = (st.session_state.get("w_pattern", 0.2),
                   st.session_state.get("w_relative", 0.2),
                   st.session_state.get("w_zero", 0.05))
-    # compute base mean with current sliders (pre)
     pre_mean = (
         w_feeder * (1 - sub["feeder_billing_efficiency"]) +
         w_dt * (1 - sub["dt_billing_efficiency"]) +
@@ -151,12 +134,9 @@ def optimize_customer_weights(customer_df_for_opt, escalations_df, w_feeder, w_d
                     best_combo = (wp_n, wr_n, wz_n)
     return best_combo[0], best_combo[1], best_combo[2], pre_mean, best_mean
 
-# Escalations report generator (independent of filters). It returns a DataFrame with:
-# Account No, Found (Yes/No), Customer Name, Billing_Type, Feeder, NAME_OF_DT, monthly readings, average theft probability (customer-level)
+# Escalations report generator
 def generate_escalations_report(ppm_df, ppd_df, escalations_df, customer_scores_df, months_list):
-    # Ensure account column names exist
     escalations = escalations_df.copy()
-    # Accept column "Account No" or "Account_No" (case insensitive)
     acct_col = None
     for col in escalations.columns:
         if col.strip().lower() in ["account no", "account_no", "accountnumber", "account number"]:
@@ -166,19 +146,14 @@ def generate_escalations_report(ppm_df, ppd_df, escalations_df, customer_scores_
         st.error("Escalations sheet does not contain 'Account No' column.")
         return pd.DataFrame()
     accounts = escalations[acct_col].astype(str).str.strip().unique().tolist()
-    # Combine prepaid and postpaid
     customers = pd.concat([ppm_df, ppd_df], ignore_index=True, sort=False)
-    # Normalize account column name in customers (both uppercase/lowercase)
     if "ACCOUNT_NUMBER" not in customers.columns:
-        # Try to find likely column
         for c in customers.columns:
             if c.strip().lower() in ["account no", "account_no", "accountnumber", "account number", "acct"]:
                 customers = customers.rename(columns={c: "ACCOUNT_NUMBER"})
                 break
-    # If still missing, create empty so matching will fail gracefully
     if "ACCOUNT_NUMBER" not in customers.columns:
         customers["ACCOUNT_NUMBER"] = ""
-    # Build lookup map from ACCOUNT_NUMBER -> customer row (there may be multiple rows - show all)
     reports = []
     for acc in accounts:
         matched = customers[customers["ACCOUNT_NUMBER"].astype(str).str.strip() == str(acc).strip()]
@@ -196,7 +171,6 @@ def generate_escalations_report(ppm_df, ppd_df, escalations_df, customer_scores_
                 "Theft Probability (avg)": np.nan
             })
         else:
-            # matched may have multiple rows; iterate
             for _, r in matched.iterrows():
                 row = {
                     "Account No": acc,
@@ -211,7 +185,6 @@ def generate_escalations_report(ppm_df, ppd_df, escalations_df, customer_scores_
                 for m in months_list:
                     colname = f"{m} (kWh)"
                     row[m] = r.get(colname, np.nan) if colname in r.index else (r.get(m, np.nan) if m in r.index else np.nan)
-                # get theft prob average from customer_scores_df (if present)
                 tp = np.nan
                 try:
                     tp_row = customer_scores_df[customer_scores_df["ACCOUNT_NUMBER"].astype(str) == str(acc)]
@@ -221,31 +194,24 @@ def generate_escalations_report(ppm_df, ppd_df, escalations_df, customer_scores_
                     tp = np.nan
                 row["Theft Probability (avg)"] = tp
                 reports.append(row)
-    report_df = pd.DataFrame(reports)
-    # Format numeric columns
-    return report_df
+    return pd.DataFrame(reports)
 
 # -----------------------------
-# Begin main app logic (original flow preserved)
+# Begin main app logic
 # -----------------------------
-
 st.title("Ikeja Electric Energy Theft Detection Dashboard")
 
-# --- File uploader ---
 st.subheader("Upload Excel File")
 uploaded_file = st.file_uploader("Choose an Excel file (.xlsx)", type=["xlsx"])
 if uploaded_file is None:
     st.warning("Please upload an Excel file to proceed.")
     st.stop()
 
-# Read all sheets with converters like original file attempted
 try:
     sheets = pd.read_excel(
         uploaded_file,
         sheet_name=None,
         converters={
-            # preserve some important strings exactly
-            # these mappings are best-effort; if sheet names differ, we'll fall back later
             "Feeder Data": {"Feeder": preserve_exact_string},
             "Transformer Data": {"New Unique DT Nomenclature": preserve_exact_string, "Ownership": preserve_exact_string, "Connection Status": preserve_exact_string},
             "Customer Data_PPM": {"NAME_OF_DT": preserve_exact_string, "NAME_OF_FEEDER": preserve_exact_string, "ACCOUNT_NUMBER": preserve_exact_string, "METER_NUMBER": preserve_exact_string, "BUSINESS_UNIT": preserve_exact_string, "UNDERTAKING": preserve_exact_string, "TARIFF": preserve_exact_string},
@@ -259,20 +225,37 @@ except Exception as e:
     st.error(f"Error reading Excel file: {e}")
     st.stop()
 
-# Attempt to locate sheets with fallback names (some users rename sheets)
+# FIXED: explicit None check instead of `or`
 def _get_sheet_case_insensitive(sheets_dict, target_name):
     for k in sheets_dict.keys():
         if k.strip().lower() == target_name.strip().lower():
             return sheets_dict[k]
     return None
 
-feeder_df = sheets.get("Feeder Data") or _get_sheet_case_insensitive(sheets, "Feeder Data")
-dt_df = sheets.get("Transformer Data") or _get_sheet_case_insensitive(sheets, "Transformer Data")
-ppm_df = sheets.get("Customer Data_PPM") or _get_sheet_case_insensitive(sheets, "Customer Data_PPM")
-ppd_df = sheets.get("Customer Data_PPD") or _get_sheet_case_insensitive(sheets, "Customer Data_PPD")
-band_df = sheets.get("Feeder Band") or _get_sheet_case_insensitive(sheets, "Feeder Band")
-tariff_df = sheets.get("Customer Tariffs") or _get_sheet_case_insensitive(sheets, "Customer Tariffs")
-escalations_df = sheets.get("Escalations") or _get_sheet_case_insensitive(sheets, "Escalations")
+feeder_df = sheets.get("Feeder Data")
+if feeder_df is None:
+    feeder_df = _get_sheet_case_insensitive(sheets, "Feeder Data")
+dt_df = sheets.get("Transformer Data")
+if dt_df is None:
+    dt_df = _get_sheet_case_insensitive(sheets, "Transformer Data")
+ppm_df = sheets.get("Customer Data_PPM")
+if ppm_df is None:
+    ppm_df = _get_sheet_case_insensitive(sheets, "Customer Data_PPM")
+ppd_df = sheets.get("Customer Data_PPD")
+if ppd_df is None:
+    ppd_df = _get_sheet_case_insensitive(sheets, "Customer Data_PPD")
+band_df = sheets.get("Feeder Band")
+if band_df is None:
+    band_df = _get_sheet_case_insensitive(sheets, "Feeder Band")
+tariff_df = sheets.get("Customer Tariffs")
+if tariff_df is None:
+    tariff_df = _get_sheet_case_insensitive(sheets, "Customer Tariffs")
+escalations_df = sheets.get("Escalations")
+if escalations_df is None:
+    escalations_df = _get_sheet_case_insensitive(sheets, "Escalations")
+
+# ... (REST OF YOUR CODE BELOW REMAINS EXACTLY AS IN YOUR LAST MESSAGE)
+
 
 # Check required sheets
 if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_df, escalations_df]):
@@ -853,3 +836,4 @@ except Exception as e:
 
 # Footer
 st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
+
