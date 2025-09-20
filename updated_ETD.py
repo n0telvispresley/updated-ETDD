@@ -33,7 +33,6 @@ def get_short_name(name, is_dt=False):
         return parts[-1].strip()
     return name if isinstance(name, str) else ""
 
-# Safe function to add Feeder column from NAME_OF_DT (keeps behavior consistent)
 def add_feeder_column_safe(df, name_of_dt_col="NAME_OF_DT"):
     if name_of_dt_col not in df.columns:
         st.error(f"Column '{name_of_dt_col}' missing. Cannot derive 'Feeder'.")
@@ -46,10 +45,11 @@ def add_feeder_column_safe(df, name_of_dt_col="NAME_OF_DT"):
     df["Feeder"] = df["Feeder"].apply(normalize_name)
     return df
 
-# Improved pattern deviation calculation
 def calculate_pattern_deviation(df, id_col, value_cols):
     results = []
     valid_cols = [c for c in value_cols if c in df.columns]
+    if not valid_cols:
+        return pd.DataFrame({"id": [], "pattern_deviation_score": []})
     for id_val, group in df.groupby(id_col):
         values = group[valid_cols].iloc[0].values.astype(float)
         nonzero = values[values > 0]
@@ -62,10 +62,11 @@ def calculate_pattern_deviation(df, id_col, value_cols):
         results.append({"id": id_val, "pattern_deviation_score": min(score, 1.0)})
     return pd.DataFrame(results)
 
-# Zero frequency score
 def calculate_zero_counter(df, id_col, value_cols):
     results = []
     valid_cols = [c for c in value_cols if c in df.columns]
+    if not valid_cols:
+        return pd.DataFrame({"id": [], "zero_counter_score": []})
     for id_val, group in df.groupby(id_col):
         values = group[valid_cols].iloc[0].values.astype(float)
         zeros = np.sum(values == 0)
@@ -73,7 +74,6 @@ def calculate_zero_counter(df, id_col, value_cols):
         results.append({"id": id_val, "zero_counter_score": min(score, 1.0)})
     return pd.DataFrame(results)
 
-# DT relative usage
 def calculate_dt_relative_usage(customer_monthly):
     cust_sum = customer_monthly.groupby(["ACCOUNT_NUMBER", "NAME_OF_DT"], as_index=False)["billed_kwh"].sum()
     dt_avg = cust_sum[cust_sum["billed_kwh"] > 0].groupby("NAME_OF_DT", as_index=False)["billed_kwh"].mean().rename(columns={"billed_kwh": "dt_avg_kwh"})
@@ -91,7 +91,6 @@ def calculate_dt_relative_usage(customer_monthly):
     cust_sum["dt_relative_usage_score"] = cust_sum.apply(_score, axis=1)
     return cust_sum[["ACCOUNT_NUMBER", "dt_relative_usage_score"]]
 
-# Optimizer
 def optimize_customer_weights(customer_df_for_opt, escalations_df, w_feeder, w_dt, w_location, step=0.05):
     accounts = set(escalations_df["Account No"].astype(str))
     sub = customer_df_for_opt[customer_df_for_opt["ACCOUNT_NUMBER"].astype(str).isin(accounts)].copy()
@@ -134,7 +133,6 @@ def optimize_customer_weights(customer_df_for_opt, escalations_df, w_feeder, w_d
                     best_combo = (wp_n, wr_n, wz_n)
     return best_combo[0], best_combo[1], best_combo[2], pre_mean, best_mean
 
-# Escalations report generator
 def generate_escalations_report(ppm_df, ppd_df, escalations_df, customer_scores_df, months_list):
     escalations = escalations_df.copy()
     acct_col = None
@@ -225,7 +223,6 @@ except Exception as e:
     st.error(f"Error reading Excel file: {e}")
     st.stop()
 
-# FIXED: explicit None check instead of `or`
 def _get_sheet_case_insensitive(sheets_dict, target_name):
     for k in sheets_dict.keys():
         if k.strip().lower() == target_name.strip().lower():
@@ -254,34 +251,28 @@ escalations_df = sheets.get("Escalations")
 if escalations_df is None:
     escalations_df = _get_sheet_case_insensitive(sheets, "Escalations")
 
-# Check required sheets
 if any(df is None for df in [feeder_df, dt_df, ppm_df, ppd_df, band_df, tariff_df, escalations_df]):
     st.error("One or more required sheets missing. Check that your Excel file has these sheets: Feeder Data, Transformer Data, Customer Data_PPM, Customer Data_PPD, Feeder Band, Customer Tariffs, Escalations.")
     st.stop()
 
 # Validate columns presence (best-effort)
 required_customer_cols = ["NAME_OF_DT", "ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "NAME_OF_FEEDER", "BUSINESS_UNIT", "UNDERTAKING", "TARIFF"]
-# add missing columns safely
 for col in required_customer_cols:
     if col not in ppm_df.columns:
         ppm_df[col] = ""
     if col not in ppd_df.columns:
         ppd_df[col] = ""
 
-# Ensure DT columns exist
 if "New Unique DT Nomenclature" not in dt_df.columns:
     dt_df["New Unique DT Nomenclature"] = dt_df.get("NAME_OF_DT", "")
 
-# Ensure feeder_df has Feeder
 if "Feeder" not in feeder_df.columns:
-    feeder_df["Feeder"] = feeder_df.columns[0] if feeder_df.shape[1]>0 else ""
+    feeder_df["Feeder"] = feeder_df.columns[0] if feeder_df.shape[1] > 0 else ""
 feeder_df["Feeder"] = feeder_df["Feeder"].apply(preserve_exact_string)
 
-# Handle missing tariff columns
 if "Tariff" not in tariff_df.columns:
     tariff_df["Tariff"] = ""
 if "Rate (NGN)" not in tariff_df.columns:
-    # try to find rate column variations
     rate_col = next((c for c in tariff_df.columns if "rate" in str(c).lower()), None)
     if rate_col:
         tariff_df["Rate (NGN)"] = pd.to_numeric(tariff_df[rate_col], errors="coerce").fillna(209.5)
@@ -289,17 +280,15 @@ if "Rate (NGN)" not in tariff_df.columns:
         tariff_df["Rate (NGN)"] = 209.5
 
 # Normalize month columns and convert to (kWh) columns
-months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]  # as in original
+months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN"]
 for df, unit in [(feeder_df, 1000), (ppm_df, 1), (ppd_df, 1)]:
     for m in months:
         col = f"{m} (kWh)"
         if m in df.columns:
             df[col] = pd.to_numeric(df[m], errors="coerce").fillna(0) * unit
         else:
-            # create 0 if missing
             if col not in df.columns:
                 df[col] = 0
-# DT sheet month conversion
 for m in months:
     col = f"{m} (kWh)"
     if m in dt_df.columns:
@@ -308,7 +297,7 @@ for m in months:
         if col not in dt_df.columns:
             dt_df[col] = 0
 
-# Drop raw month columns if present to keep only (kWh) variants
+# Drop raw month columns if present
 for df in [feeder_df, dt_df, ppm_df, ppd_df]:
     drop_cols = [c for c in df.columns if c in months]
     if drop_cols:
@@ -327,32 +316,11 @@ for col, df in name_normalizations:
     if col in df.columns:
         df[col] = df[col].apply(normalize_name)
 
-# Create Feeder_Short for feeder_df
-if "Feeder" in feeder_df.columns:
-    feeder_df["Feeder_Short"] = feeder_df["Feeder"].apply(get_short_name)
-
-# Combine customers
-ppm_df["Billing_Type"] = "PPM"
-ppd_df["Billing_Type"] = "PPD"
-customer_df = pd.concat([ppm_df, ppd_df], ignore_index=True, sort=False)
-
-# Create Feeder columns safely
-customer_df = add_feeder_column_safe(customer_df, "NAME_OF_DT")
-dt_df["NAME_OF_DT"] = dt_df.get("New Unique DT Nomenclature", dt_df.get("NAME_OF_DT", ""))
-dt_df["Feeder"] = dt_df["NAME_OF_DT"].apply(lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-"))>=3 else x)
-dt_df["Feeder"] = dt_df["Feeder"].apply(normalize_name)
-
-# Merge Tariff_Rate from feeder_df to dt_df
-dt_df = dt_df.merge(feeder_df[["Feeder", "Tariff_Rate"]], on="Feeder", how="left")
-dt_df["Tariff_Rate"] = dt_df["Tariff_Rate"].fillna(209.5)
-
-# Compute band rates and map feeders -> tariff rates (same approach as original)
-# Ensure band_df has Feeder and BAND
+# Compute band rates and map feeders -> tariff rates (MOVED EARLIER)
 if "Feeder" not in band_df.columns:
     band_df["Feeder"] = ""
 if "BAND" not in band_df.columns:
     band_df["BAND"] = ""
-
 band_tariffs = {
     "A": ["A-MD1", "A-MD2", "A-Non MD"],
     "B": ["B-MD1", "B-MD2", "B-Non MD"],
@@ -364,13 +332,32 @@ band_rates = {}
 for band, tariffs in band_tariffs.items():
     rates = tariff_df[tariff_df["Tariff"].isin(tariffs)]["Rate (NGN)"]
     band_rates[band] = rates.mean() if not rates.empty else 209.5
-
-# Map feeders to band and rate
 feeder_df = feeder_df.merge(band_df[["Feeder", "BAND"]], on="Feeder", how="left")
 feeder_df["BAND"] = feeder_df["BAND"].fillna("Unknown")
 feeder_df["Tariff_Rate"] = feeder_df["BAND"].map(band_rates).fillna(209.5)
+if "Short Name" in band_df.columns:
+    feeder_df = feeder_df.merge(band_df[["Feeder", "Short Name"]], on="Feeder", how="left")
+    feeder_df["Feeder_Short"] = feeder_df["Short Name"].fillna(feeder_df["Feeder"])
+    feeder_df.drop(columns=["Short Name"], inplace=True, errors="ignore")
+else:
+    feeder_df["Feeder_Short"] = feeder_df["Feeder"]
 
-# Filter dt_df and customer_df to only feeders present in feeder_df (defensive)
+# Combine customers
+ppm_df["Billing_Type"] = "PPM"
+ppd_df["Billing_Type"] = "PPD"
+customer_df = pd.concat([ppm_df, ppd_df], ignore_index=True, sort=False)
+
+# Create Feeder columns safely
+customer_df = add_feeder_column_safe(customer_df, "NAME_OF_DT")
+dt_df["NAME_OF_DT"] = dt_df.get("New Unique DT Nomenclature", dt_df.get("NAME_OF_DT", ""))
+dt_df["Feeder"] = dt_df["NAME_OF_DT"].apply(lambda x: "-".join(x.split("-")[:-1]) if isinstance(x, str) and "-" in x and len(x.split("-")) >= 3 else x)
+dt_df["Feeder"] = dt_df["Feeder"].apply(normalize_name)
+
+# Merge Tariff_Rate into dt_df (NOW SAFE since Tariff_Rate exists in feeder_df)
+dt_df = dt_df.merge(feeder_df[["Feeder", "Tariff_Rate"]], on="Feeder", how="left")
+dt_df["Tariff_Rate"] = dt_df["Tariff_Rate"].fillna(209.5)
+
+# Filter dt_df and customer_df to only feeders present in feeder_df
 valid_feeders = set(feeder_df["Feeder"])
 if "Feeder" in dt_df.columns:
     dt_df = dt_df[dt_df["Feeder"].isin(valid_feeders)].copy()
@@ -389,9 +376,9 @@ if "TARIFF" in customer_df.columns:
 else:
     customer_df["Rate (NGN)"] = 209.5
 
-# Exclude NOT CONNECTED DTs with zero energy if original logic wants it
+# Exclude NOT CONNECTED DTs with zero energy
 dt_df["total_energy_kwh"] = dt_df[[f"{m} (kWh)" for m in months]].sum(axis=1)
-not_connected_zero = (dt_df.get("Connection Status","").str.strip().str.upper() == "NOT CONNECTED") & (dt_df["total_energy_kwh"] == 0)
+not_connected_zero = (dt_df.get("Connection Status", "").str.strip().str.upper() == "NOT CONNECTED") & (dt_df["total_energy_kwh"] == 0)
 if not_connected_zero.any():
     st.warning(f"Excluding {not_connected_zero.sum()} DTs marked NOT CONNECTED with zero energy.")
 dt_df = dt_df[~not_connected_zero].copy()
@@ -400,15 +387,12 @@ dt_df = dt_df[~not_connected_zero].copy()
 dt_df["DT_Short_Name"] = dt_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True))
 customer_df["DT_Short_Name"] = customer_df["NAME_OF_DT"].apply(lambda x: get_short_name(x, is_dt=True))
 
-# Melt customer monthly readings for later scoring
+# Melt customer monthly readings
 required_id_vars = ["NAME_OF_DT", "DT_Short_Name", "ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "Billing_Type", "Feeder", "Rate (NGN)"]
-# Add missing required id vars
 for col in required_id_vars:
     if col not in customer_df.columns:
         customer_df[col] = ""
-
 value_vars = [f"{m} (kWh)" for m in months]
-# Melt
 try:
     customer_monthly = customer_df.melt(id_vars=required_id_vars, value_vars=value_vars, var_name="month", value_name="billed_kwh")
     customer_monthly["month"] = customer_monthly["month"].str.replace(" (kWh)", "")
@@ -426,35 +410,34 @@ except Exception as e:
     st.error(f"Failed to melt DT monthly: {e}")
     st.stop()
 
-# Filter month range UI (retain original behavior)
+# Filter month range UI
 st.subheader("Filters")
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 with col1:
     bu_options = sorted(customer_df["BUSINESS_UNIT"].unique()) if "BUSINESS_UNIT" in customer_df.columns else []
-    selected_bu = st.selectbox("Select Business Unit", bu_options) if bu_options else ""
+    selected_bu = st.selectbox("Select Business Unit", [""] + bu_options) if bu_options else ""
 with col2:
     if selected_bu:
         customer_df_bu = customer_df[customer_df["BUSINESS_UNIT"] == selected_bu]
         ut_options = sorted(customer_df_bu["UNDERTAKING"].unique()) if "UNDERTAKING" in customer_df_bu.columns else []
-        selected_ut = st.selectbox("Select Undertaking", ut_options) if ut_options else ""
+        selected_ut = st.selectbox("Select Undertaking", [""] + ut_options) if ut_options else ""
     else:
         selected_ut = ""
 with col3:
     feeder_options = sorted(feeder_df["Feeder_Short"].unique()) if "Feeder_Short" in feeder_df.columns else sorted(feeder_df["Feeder"].unique())
-    selected_feeder_short = st.selectbox("Select Feeder", feeder_options) if feeder_options else ""
+    selected_feeder_short = st.selectbox("Select Feeder", [""] + feeder_options) if feeder_options else ""
 with col4:
     selected_feeder = ""
     selected_dt_short = ""
     if selected_feeder_short:
-        # Map selected short name back to feeder
         if "Feeder_Short" in feeder_df.columns:
-            selected_feeder = feeder_df.loc[feeder_df["Feeder_Short"] == selected_feeder_short, "Feeder"].iloc[0]
+            matching_feeders = feeder_df[feeder_df["Feeder_Short"] == selected_feeder_short]["Feeder"]
+            selected_feeder = matching_feeders.iloc[0] if not matching_feeders.empty else selected_feeder_short
         else:
-            # try to find exact match
             selected_feeder = selected_feeder_short
         dt_df_filtered = dt_df[dt_df["Feeder"] == selected_feeder]
         dt_options = sorted(dt_df_filtered["DT_Short_Name"].unique())
-        selected_dt_short = st.selectbox("Select DT", dt_options) if dt_options else ""
+        selected_dt_short = st.selectbox("Select DT", [""] + dt_options) if dt_options else ""
 with col5:
     start_month = st.selectbox("Start Month", months)
 with col6:
@@ -463,7 +446,7 @@ with col6:
         st.error("Start Month must be before or equal to End Month.")
         st.stop()
 
-# Weights sliders (include zero counter slider)
+# Weights sliders
 st.subheader("Adjust Theft Probability Weights")
 colw1, colw2, colw3 = st.columns(3)
 if "w_pattern" not in st.session_state:
@@ -471,71 +454,58 @@ if "w_pattern" not in st.session_state:
 if "w_relative" not in st.session_state:
     st.session_state.w_relative = 0.2
 if "w_zero" not in st.session_state:
-    st.session_state.w_zero = 0.05  # user told earlier to default 0.05
-
+    st.session_state.w_zero = 0.05
 with colw1:
     w_feeder = st.slider("Feeder Billing Efficiency Weight", 0.0, 1.0, 0.2, 0.01)
     w_dt = st.slider("DT Billing Efficiency Weight", 0.0, 1.0, 0.2, 0.01)
-with colw2:
+with col2:
     w_location = st.slider("Location Trust Score Weight", 0.0, 1.0, 0.2, 0.01)
     w_pattern = st.slider("Consumption Pattern Deviation Weight", 0.0, 1.0, st.session_state.w_pattern, 0.01, key="w_pattern")
 with colw3:
     w_relative = st.slider("DT Relative Usage Score Weight", 0.0, 1.0, st.session_state.w_relative, 0.01, key="w_relative")
     w_zero = st.slider("Zero Frequency Weight", 0.0, 1.0, st.session_state.w_zero, 0.01, key="w_zero")
 
-# Normalize weights (defensive)
+# Normalize weights
 total_weight = w_feeder + w_dt + w_location + w_pattern + w_relative + w_zero
 if total_weight == 0:
     st.error("Total weight cannot be zero. Adjust sliders.")
     st.stop()
-w_feeder /= total_weight
-w_dt /= total_weight
-w_location /= total_weight
-w_pattern /= total_weight
-w_relative /= total_weight
-w_zero /= total_weight
+w_feeder = w_feeder / total_weight
+w_dt = w_dt / total_weight
+w_location = w_location / total_weight
+w_pattern = w_pattern / total_weight
+w_relative = w_relative / total_weight
+w_zero = w_zero / total_weight
 
-# Provide Optimize button (optimize pattern/relative/zero fractions to maximize mean theft for escalations accounts)
+# Optimize weights
 if st.button("Optimize Customer-Level Weights for Escalations"):
-    # Prepare customer-level aggregated df for optimizer: compute feeder/dt efficiencies and location trust first
-    # We'll replicate portions of your original calculations but aggregated per-account
     try:
-        # Aggregate months selected
         month_indices = {m: i for i, m in enumerate(months)}
-        selected_months = months[month_indices[start_month]: month_indices[end_month] + 1]
+        selected_months = months[month_indices[start_month]:month_indices[end_month] + 1]
         if not selected_months:
             st.error("No months selected.")
-        # customer_monthly already exists; filter
+            st.stop()
         customer_monthly_sel = customer_monthly[customer_monthly["month"].isin(selected_months)].copy()
         if customer_monthly_sel.empty:
             st.error("No customer monthly data for selected months.")
-        # Compute feeder_billing_efficiency and dt_billing_efficiency similar to your original logic:
-        # For simplicity compute feeder_billing_efficiency as sum(customer billed)/sum(feeder supply) aggregated
+            st.stop()
         feeder_monthly = feeder_df.melt(id_vars=["Feeder", "Feeder_Short", "Tariff_Rate"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
         feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
         feeder_monthly = feeder_monthly[feeder_monthly["month"].isin(selected_months)]
         feeder_agg = feeder_monthly.groupby(["Feeder"])["feeder_energy_kwh"].sum().reset_index()
-
-        # DT aggregated monthly for selected months
         dt_sel = dt_agg_monthly[dt_agg_monthly["month"].isin(selected_months)].copy()
         dt_agg_sum = dt_sel.groupby(["NAME_OF_DT", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership", "Connection Status", "total_energy_kwh"], as_index=False)["total_dt_kwh"].sum()
-
-        # Customer agg sums
         cust_agg = customer_monthly_sel.groupby(["NAME_OF_DT", "Feeder", "ACCOUNT_NUMBER"], as_index=False)["billed_kwh"].sum()
-        # DT-level customer billed
         dt_customer_billed = cust_agg.groupby("NAME_OF_DT", as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
-
         dt_merged = dt_agg_sum.merge(dt_customer_billed, left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
         dt_merged["customer_billed_kwh"] = dt_merged["customer_billed_kwh"].fillna(0)
         dt_merged["total_billed_kwh"] = np.where(dt_merged["Ownership"].str.strip().str.upper().isin(["PRIVATE"]), dt_merged["total_dt_kwh"], dt_merged["customer_billed_kwh"])
         dt_merged["dt_billing_efficiency"] = np.where((dt_merged["Connection Status"].str.strip().str.upper()=="NOT CONNECTED") & (dt_merged["total_energy_kwh"]>0), 0.0, (dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0,1)).clip(0,1))
-        # feeder merge
         feeder_billed = dt_merged.groupby("Feeder", as_index=False)["total_billed_kwh"].sum()
         feeder_merged = feeder_agg.merge(feeder_billed, on="Feeder", how="left")
         feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
         feeder_merged["feeder_billing_efficiency"] = (feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0,1)).clip(0,1)
         feeder_merged["location_trust_score"] = 0
-        # location trust from escalations aggregated per feeder and dt
         escalations_df_local = escalations_df.copy()
         escalations_df_local["Report_Count"] = 1
         feeder_escal = escalations_df_local.groupby("Feeder", as_index=False)["Report_Count"].sum()
@@ -543,25 +513,14 @@ if st.button("Optimize Customer-Level Weights for Escalations"):
             feeder_escal["location_trust_score"] = feeder_escal["Report_Count"] / feeder_escal["Report_Count"].max()
         feeder_merged = feeder_merged.merge(feeder_escal[["Feeder","location_trust_score"]], on="Feeder", how="left")
         feeder_merged["location_trust_score"] = feeder_merged["location_trust_score"].fillna(0)
-
-        # DT location trust
         dt_escal = escalations_df_local.groupby("DT Nomenclature", as_index=False)["Report_Count"].sum()
         if not dt_escal["Report_Count"].empty:
             dt_escal["location_trust_score"] = dt_escal["Report_Count"] / dt_escal["Report_Count"].max()
-
-        # Build a per-customer table for optimization with fields required
-        # We'll compute pattern and zero scores using customer_df_full (all months)
         customer_full = customer_df.copy()
-        # compute pattern and zero using full months (or maybe selected - choose full to catch recurring zeros)
         pattern_df = calculate_pattern_deviation(customer_full, "ACCOUNT_NUMBER", [f"{m} (kWh)" for m in months])
         zero_df = calculate_zero_counter(customer_full, "ACCOUNT_NUMBER", [f"{m} (kWh)" for m in months])
-        # compute dt_relative usage using selected months
         dt_relative_df = calculate_dt_relative_usage(customer_monthly_sel)
-        # Build aggregated per-customer features
-        # feeder/dt efficiencies join: join customer -> dt_merged -> feeder_merged
-        # customer -> get dt_billing_efficiency from dt_merged
         cust_features = cust_agg.groupby("ACCOUNT_NUMBER", as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
-        # Attach NAME_OF_DT for customers from customer_df
         acct_to_dt = customer_df[["ACCOUNT_NUMBER","NAME_OF_DT","Feeder"]].drop_duplicates(subset=["ACCOUNT_NUMBER"])
         cust_features = cust_features.merge(acct_to_dt, on="ACCOUNT_NUMBER", how="left")
         cust_features = cust_features.merge(dt_merged[["NAME_OF_DT","dt_billing_efficiency"]], left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
@@ -569,15 +528,12 @@ if st.button("Optimize Customer-Level Weights for Escalations"):
         cust_features = cust_features.merge(pattern_df, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
         cust_features = cust_features.merge(zero_df, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
         cust_features = cust_features.merge(dt_relative_df, on="ACCOUNT_NUMBER", how="left")
-        # Fill NaNs
         for c in ["feeder_billing_efficiency","dt_billing_efficiency","location_trust_score","pattern_deviation_score","zero_counter_score","dt_relative_usage_score"]:
             if c not in cust_features.columns:
                 cust_features[c] = 0
         cust_features[["feeder_billing_efficiency","dt_billing_efficiency","location_trust_score","pattern_deviation_score","zero_counter_score","dt_relative_usage_score"]] = cust_features[["feeder_billing_efficiency","dt_billing_efficiency","location_trust_score","pattern_deviation_score","zero_counter_score","dt_relative_usage_score"]].fillna(0)
-        # Run optimizer
         try:
-            wp_n, wr_n, wz_n, pre_mean, post_mean = optimize_customer_weights(cust_features, escalations_df_local, w_feeder, w_dt, w_location, step=0.05)
-            # Update session state safely
+            wp_n, wr_n, wz_n, pre_mean, post_mean = optimize_customer_weights(cust_features, escalations_df_local, w_feeder, w_dt, w_location)
             st.session_state["w_pattern"] = float(wp_n)
             st.session_state["w_relative"] = float(wr_n)
             st.session_state["w_zero"] = float(wz_n)
@@ -597,30 +553,22 @@ total_weight = w_feeder + w_dt + w_location + w_pattern + w_relative + w_zero
 if total_weight == 0:
     st.error("Total weight cannot be zero after optimization.")
     st.stop()
-w_feeder /= total_weight
-w_dt /= total_weight
-w_location /= total_weight
-w_pattern /= total_weight
-w_relative /= total_weight
-w_zero /= total_weight
+w_feeder = w_feeder / total_weight
+w_dt = w_dt / total_weight
+w_location = w_location / total_weight
+w_pattern = w_pattern / total_weight
+w_relative = w_relative / total_weight
+w_zero = w_zero / total_weight
 
-# Now compute customer monthly / theft probability using chosen weights (for display/export)
-# First compute pattern, zero, dt_relative for appropriate dataframes
+# Compute customer monthly / theft probability
 pattern_df_full = calculate_pattern_deviation(customer_df, "ACCOUNT_NUMBER", [f"{m} (kWh)" for m in months])
 zero_df_full = calculate_zero_counter(customer_df, "ACCOUNT_NUMBER", [f"{m} (kWh)" for m in months])
-
-# compute dt_relative usage across selected months (use months selected by UI)
-selected_months = months[ months.index(start_month) : months.index(end_month)+1 ]
+selected_months = months[months.index(start_month):months.index(end_month)+1]
 customer_monthly_sel = customer_monthly[customer_monthly["month"].isin(selected_months)].copy()
 dt_relative_df_sel = calculate_dt_relative_usage(customer_monthly_sel)
-
-# Merge all to customer_monthly_sel for per-month scoring
 customer_monthly_sel = customer_monthly_sel.merge(pattern_df_full, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
 customer_monthly_sel = customer_monthly_sel.merge(zero_df_full, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
 customer_monthly_sel = customer_monthly_sel.merge(dt_relative_df_sel, on="ACCOUNT_NUMBER", how="left")
-
-# Merge feeder and dt per-month efficiencies into customer_monthly_sel
-# compute dt monthly efficiencies as earlier
 customer_billed_monthly = customer_monthly_sel.groupby(["NAME_OF_DT","month"], as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
 dt_merged_monthly = dt_agg_monthly.merge(customer_billed_monthly, left_on=["NAME_OF_DT","month"], right_on=["NAME_OF_DT","month"], how="left")
 dt_merged_monthly["customer_billed_kwh"] = dt_merged_monthly["customer_billed_kwh"].fillna(0)
@@ -634,30 +582,22 @@ dt_merged_monthly["dt_billing_efficiency"] = np.where(
     0.0,
     (dt_merged_monthly["total_billed_kwh"] / dt_merged_monthly["total_dt_kwh"].replace(0,1)).clip(0,1)
 )
-# feeder monthly
 feeder_monthly = feeder_df.melt(id_vars=["Feeder","Feeder_Short","Tariff_Rate"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
 feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)","")
 feeder_monthly = feeder_monthly[feeder_monthly["month"].isin(selected_months)]
 feeder_agg = feeder_monthly.groupby(["Feeder","Feeder_Short","Tariff_Rate"], as_index=False)["feeder_energy_kwh"].sum()
-
-# compute dt_agg_sum and feeder_merged for overall metrics used in per-customer merge
 dt_agg_sum = dt_merged_monthly.groupby(["NAME_OF_DT","DT_Short_Name","Feeder","Tariff_Rate","Ownership","Connection Status","total_energy_kwh"], as_index=False)["total_dt_kwh"].sum()
 cust_agg_total = customer_monthly_sel.groupby(["NAME_OF_DT","Feeder"], as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
 dt_merged = dt_agg_sum.merge(cust_agg_total, left_on=["NAME_OF_DT","Feeder"], right_on=["NAME_OF_DT","Feeder"], how="left")
 dt_merged["customer_billed_kwh"] = dt_merged["customer_billed_kwh"].fillna(0)
 dt_merged["total_billed_kwh"] = np.where(dt_merged.get("Ownership","").str.strip().str.upper().isin(["PRIVATE"]), dt_merged["total_dt_kwh"], dt_merged["customer_billed_kwh"])
 dt_merged["dt_billing_efficiency"] = np.where((dt_merged.get("Connection Status","").str.strip().str.upper()=="NOT CONNECTED") & (dt_merged["total_energy_kwh"]>0), 0.0, (dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0,1)).clip(0,1))
-
 feeder_agg_billed = dt_merged.groupby("Feeder", as_index=False)["total_billed_kwh"].sum()
 feeder_merged = feeder_agg.merge(feeder_agg_billed, on="Feeder", how="left")
 feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
 feeder_merged["feeder_billing_efficiency"] = (feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0,1)).clip(0,1)
-
-# Merge feeder/dt scores into customer_monthly_sel per-row
 customer_monthly_sel = customer_monthly_sel.merge(feeder_merged[["Feeder","feeder_billing_efficiency"]], on="Feeder", how="left")
 customer_monthly_sel = customer_monthly_sel.merge(dt_merged[["NAME_OF_DT","dt_billing_efficiency"]], left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
-
-# location trust: compute from escalations sheet at feeder & dt level
 escal_df_local = escalations_df.copy()
 escal_df_local["Report_Count"] = 1
 feeder_escal = escal_df_local.groupby("Feeder", as_index=False)["Report_Count"].sum()
@@ -670,19 +610,14 @@ if not dt_escal.empty:
     dt_escal["location_trust_score"] = dt_escal["Report_Count"] / dt_escal["Report_Count"].max()
 else:
     dt_escal = pd.DataFrame(columns=["DT Nomenclature","location_trust_score"])
-# merge into customer_monthly_sel prefer dt-level trust then feeder-level
 customer_monthly_sel = customer_monthly_sel.merge(dt_escal[["DT Nomenclature","location_trust_score"]], left_on="NAME_OF_DT", right_on="DT Nomenclature", how="left")
 customer_monthly_sel = customer_monthly_sel.merge(feeder_escal[["Feeder","location_trust_score"]], on="Feeder", how="left", suffixes=("_dt","_feeder"))
 customer_monthly_sel["location_trust_score"] = customer_monthly_sel["location_trust_score_dt"].combine_first(customer_monthly_sel["location_trust_score_feeder"]).fillna(0)
-
-# fill NaNs for scores
 customer_monthly_sel["pattern_deviation_score"] = customer_monthly_sel["pattern_deviation_score"].fillna(0)
 customer_monthly_sel["zero_counter_score"] = customer_monthly_sel["zero_counter_score"].fillna(0)
 customer_monthly_sel["dt_relative_usage_score"] = customer_monthly_sel["dt_relative_usage_score"].fillna(0)
 customer_monthly_sel["feeder_billing_efficiency"] = customer_monthly_sel["feeder_billing_efficiency"].fillna(0)
 customer_monthly_sel["dt_billing_efficiency"] = customer_monthly_sel["dt_billing_efficiency"].fillna(0)
-
-# calculate theft_probability per-month per-customer
 customer_monthly_sel["theft_probability"] = (
     w_feeder * (1 - customer_monthly_sel["feeder_billing_efficiency"]) +
     w_dt * (1 - customer_monthly_sel["dt_billing_efficiency"]) +
@@ -691,10 +626,7 @@ customer_monthly_sel["theft_probability"] = (
     w_relative * customer_monthly_sel["dt_relative_usage_score"] +
     w_zero * customer_monthly_sel["zero_counter_score"]
 ).clip(0,1)
-
 customer_monthly_sel["risk_tier"] = pd.cut(customer_monthly_sel["theft_probability"], bins=[0,0.4,0.7,1.0], labels=["Low","Medium","High"], include_lowest=True)
-
-# Aggregate to customer level for lists & downloads
 month_customers = customer_monthly_sel.groupby(["ACCOUNT_NUMBER","METER_NUMBER","CUSTOMER_NAME","ADDRESS","Billing_Type"], as_index=False).agg({
     "billed_kwh":"sum",
     "theft_probability":"mean",
@@ -704,7 +636,7 @@ month_customers = customer_monthly_sel.groupby(["ACCOUNT_NUMBER","METER_NUMBER",
 })
 month_customers = month_customers.rename(columns={"billed_kwh":"billed_kwh_total","theft_probability":"theft_probability_avg"})
 
-# Display customer list as in original
+# Display customer list
 st.subheader(f"Customers under {selected_dt_short} ({selected_feeder_short}, {start_month} to {end_month})")
 if selected_dt_short:
     filtered_customers = customer_monthly_sel[customer_monthly_sel["DT_Short_Name"] == selected_dt_short]
@@ -727,7 +659,7 @@ if selected_dt_short:
             "zero_counter_score":"{:.3f}"
         }), use_container_width=True)
 
-# Customer Heatmap (preserve original display if DT selected)
+# Customer Heatmap
 st.subheader("Theft Probability Heatmap by Customer")
 if selected_dt_short:
     try:
@@ -755,7 +687,7 @@ if selected_dt_short:
     except Exception as e:
         st.error(f"Customer heatmap failed: {e}")
 
-# DT Theft Heatmap (preserve)
+# DT Theft Heatmap
 st.subheader("DT Theft Probability Heatmap")
 if selected_feeder:
     try:
@@ -778,7 +710,7 @@ if selected_feeder:
     except Exception as e:
         st.error(f"DT heatmap failed: {e}")
 
-# Feeder Summary and DT Summary (simple versions preserved)
+# Feeder Summary
 st.subheader("Feeder Summary")
 try:
     feeder_summary = feeder_merged.copy()
@@ -791,6 +723,7 @@ try:
 except Exception as e:
     st.error(f"Feeder summary failed: {e}")
 
+# DT Summary
 st.subheader("DT Summary")
 try:
     dt_summary_show = dt_merged.groupby("DT_Short_Name").agg({
@@ -806,7 +739,7 @@ try:
 except Exception as e:
     st.error(f"DT summary failed: {e}")
 
-# Export customer list CSV (as original)
+# Export customer list CSV
 st.subheader("Export Customer Data")
 try:
     if not month_customers.empty:
@@ -817,21 +750,17 @@ try:
 except Exception as e:
     st.error(f"CSV export failed: {e}")
 
-# Escalations report generation and download (independent of selected filters)
+# Escalations report
 st.subheader("Escalations Report (full lookup of 'Account No')")
 try:
-    # Build a per-account averaged customer scores dataframe
     cust_scores_avg = customer_monthly_sel.groupby("ACCOUNT_NUMBER", as_index=False)["theft_probability"].mean().rename(columns={"theft_probability":"theft_probability"})
-    # generate report
     escal_report_df = generate_escalations_report(ppm_df, ppd_df, escalations_df, cust_scores_avg, months)
     if escal_report_df.empty:
         st.info("Escalations report produced no rows.")
     else:
-        # Format numeric columns safely
         if "Theft Probability (avg)" in escal_report_df.columns:
             escal_report_df["Theft Probability (avg)"] = pd.to_numeric(escal_report_df["Theft Probability (avg)"], errors="coerce")
         st.dataframe(escal_report_df.fillna(""), use_container_width=True)
-        # Prepare excel for download
         towrite = io.BytesIO()
         with pd.ExcelWriter(towrite, engine='openpyxl') as writer:
             escal_report_df.to_excel(writer, index=False, sheet_name="Escalations Report")
