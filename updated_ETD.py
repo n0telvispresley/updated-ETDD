@@ -336,6 +336,9 @@ if "Short Name" in band_df.columns:
 else:
     feeder_df["Feeder_Short"] = feeder_df["Feeder"]
 
+# Initialize location_trust_score early
+feeder_df["location_trust_score"] = 0.0
+
 # Combine customers
 ppm_df["Billing_Type"] = "PPM"
 ppd_df["Billing_Type"] = "PPD"
@@ -478,6 +481,20 @@ w_pattern = w_pattern / total_weight
 w_relative = w_relative / total_weight
 w_zero = w_zero / total_weight
 
+# Compute location trust scores for optimizer
+escalations_df_local = escalations_df.copy()
+escalations_df_local["Report_Count"] = 1
+feeder_escal = escalations_df_local.groupby("Feeder", as_index=False)["Report_Count"].sum()
+if not feeder_escal.empty:
+    feeder_escal["location_trust_score"] = feeder_escal["Report_Count"] / feeder_escal["Report_Count"].max()
+else:
+    feeder_escal = pd.DataFrame({"Feeder": feeder_df["Feeder"], "location_trust_score": 0.0})
+dt_escal = escalations_df_local.groupby("DT Nomenclature", as_index=False)["Report_Count"].sum()
+if not dt_escal.empty:
+    dt_escal["location_trust_score"] = dt_escal["Report_Count"] / dt_escal["Report_Count"].max()
+else:
+    dt_escal = pd.DataFrame({"DT Nomenclature": dt_df["NAME_OF_DT"], "location_trust_score": 0.0})
+
 # Optimize weights
 if st.button("Optimize Customer-Level Weights for Escalations"):
     try:
@@ -506,33 +523,24 @@ if st.button("Optimize Customer-Level Weights for Escalations"):
         feeder_merged = feeder_agg.merge(feeder_billed, on="Feeder", how="left")
         feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
         feeder_merged["feeder_billing_efficiency"] = (feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0,1)).clip(0,1)
-        feeder_merged["location_trust_score"] = 0
-        escalations_df_local = escalations_df.copy()
-        escalations_df_local["Report_Count"] = 1
-        feeder_escal = escalations_df_local.groupby("Feeder", as_index=False)["Report_Count"].sum()
-        if not feeder_escal["Report_Count"].empty:
-            feeder_escal["location_trust_score"] = feeder_escal["Report_Count"] / feeder_escal["Report_Count"].max()
-        feeder_merged = feeder_merged.merge(feeder_escal[["Feeder","location_trust_score"]], on="Feeder", how="left")
-        feeder_merged["location_trust_score"] = feeder_merged["location_trust_score"].fillna(0)
-        dt_escal = escalations_df_local.groupby("DT Nomenclature", as_index=False)["Report_Count"].sum()
-        if not dt_escal["Report_Count"].empty:
-            dt_escal["location_trust_score"] = dt_escal["Report_Count"] / dt_escal["Report_Count"].max()
+        feeder_merged = feeder_merged.merge(feeder_escal[["Feeder", "location_trust_score"]], on="Feeder", how="left")
+        feeder_merged["location_trust_score"] = feeder_merged["location_trust_score"].fillna(0.0)
         customer_full = customer_df.copy()
         pattern_df = calculate_pattern_deviation(customer_full, "ACCOUNT_NUMBER", [f"{m} (kWh)" for m in months])
         zero_df = calculate_zero_counter(customer_full, "ACCOUNT_NUMBER", [f"{m} (kWh)" for m in months])
         dt_relative_df = calculate_dt_relative_usage(customer_monthly_sel)
         cust_features = cust_agg.groupby("ACCOUNT_NUMBER", as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
-        acct_to_dt = customer_df[["ACCOUNT_NUMBER","NAME_OF_DT","Feeder"]].drop_duplicates(subset=["ACCOUNT_NUMBER"])
+        acct_to_dt = customer_df[["ACCOUNT_NUMBER", "NAME_OF_DT", "Feeder", "DT_Short_Name"]].drop_duplicates(subset=["ACCOUNT_NUMBER"])
         cust_features = cust_features.merge(acct_to_dt, on="ACCOUNT_NUMBER", how="left")
-        cust_features = cust_features.merge(dt_merged[["NAME_OF_DT","dt_billing_efficiency"]], left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
-        cust_features = cust_features.merge(feeder_merged[["Feeder","feeder_billing_efficiency","location_trust_score"]], on="Feeder", how="left")
+        cust_features = cust_features.merge(dt_merged[["NAME_OF_DT", "dt_billing_efficiency"]], left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
+        cust_features = cust_features.merge(feeder_merged[["Feeder", "feeder_billing_efficiency", "location_trust_score"]], on="Feeder", how="left")
         cust_features = cust_features.merge(pattern_df, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
         cust_features = cust_features.merge(zero_df, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
         cust_features = cust_features.merge(dt_relative_df, on="ACCOUNT_NUMBER", how="left")
-        for c in ["feeder_billing_efficiency","dt_billing_efficiency","location_trust_score","pattern_deviation_score","zero_counter_score","dt_relative_usage_score"]:
+        for c in ["feeder_billing_efficiency", "dt_billing_efficiency", "location_trust_score", "pattern_deviation_score", "zero_counter_score", "dt_relative_usage_score"]:
             if c not in cust_features.columns:
-                cust_features[c] = 0
-        cust_features[["feeder_billing_efficiency","dt_billing_efficiency","location_trust_score","pattern_deviation_score","zero_counter_score","dt_relative_usage_score"]] = cust_features[["feeder_billing_efficiency","dt_billing_efficiency","location_trust_score","pattern_deviation_score","zero_counter_score","dt_relative_usage_score"]].fillna(0)
+                cust_features[c] = 0.0
+        cust_features[["feeder_billing_efficiency", "dt_billing_efficiency", "location_trust_score", "pattern_deviation_score", "zero_counter_score", "dt_relative_usage_score"]] = cust_features[["feeder_billing_efficiency", "dt_billing_efficiency", "location_trust_score", "pattern_deviation_score", "zero_counter_score", "dt_relative_usage_score"]].fillna(0.0)
         try:
             wp_n, wr_n, wz_n, pre_mean, post_mean = optimize_customer_weights(cust_features, escalations_df_local, w_feeder, w_dt, w_location)
             st.session_state["w_pattern"] = float(wp_n)
@@ -570,55 +578,45 @@ dt_relative_df_sel = calculate_dt_relative_usage(customer_monthly_sel)
 customer_monthly_sel = customer_monthly_sel.merge(pattern_df_full, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
 customer_monthly_sel = customer_monthly_sel.merge(zero_df_full, left_on="ACCOUNT_NUMBER", right_on="id", how="left")
 customer_monthly_sel = customer_monthly_sel.merge(dt_relative_df_sel, on="ACCOUNT_NUMBER", how="left")
-customer_billed_monthly = customer_monthly_sel.groupby(["NAME_OF_DT","month"], as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
-dt_merged_monthly = dt_agg_monthly.merge(customer_billed_monthly, left_on=["NAME_OF_DT","month"], right_on=["NAME_OF_DT","month"], how="left")
+customer_billed_monthly = customer_monthly_sel.groupby(["NAME_OF_DT", "month"], as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
+dt_merged_monthly = dt_agg_monthly.merge(customer_billed_monthly, left_on=["NAME_OF_DT", "month"], right_on=["NAME_OF_DT", "month"], how="left")
 dt_merged_monthly["customer_billed_kwh"] = dt_merged_monthly["customer_billed_kwh"].fillna(0)
 dt_merged_monthly["total_billed_kwh"] = np.where(
-    dt_merged_monthly.get("Ownership","").str.strip().str.upper().isin(["PRIVATE"]),
+    dt_merged_monthly.get("Ownership", "").str.strip().str.upper().isin(["PRIVATE"]),
     dt_merged_monthly["total_dt_kwh"],
     dt_merged_monthly["customer_billed_kwh"]
 )
 dt_merged_monthly["dt_billing_efficiency"] = np.where(
-    (dt_merged_monthly.get("Connection Status","").str.strip().str.upper()=="NOT CONNECTED") & (dt_merged_monthly["total_energy_kwh"]>0),
+    (dt_merged_monthly.get("Connection Status", "").str.strip().str.upper()=="NOT CONNECTED") & (dt_merged_monthly["total_energy_kwh"]>0),
     0.0,
     (dt_merged_monthly["total_billed_kwh"] / dt_merged_monthly["total_dt_kwh"].replace(0,1)).clip(0,1)
 )
-feeder_monthly = feeder_df.melt(id_vars=["Feeder","Feeder_Short","Tariff_Rate"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
-feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)","")
+feeder_monthly = feeder_df.melt(id_vars=["Feeder", "Feeder_Short", "Tariff_Rate"], value_vars=[f"{m} (kWh)" for m in months], var_name="month", value_name="feeder_energy_kwh")
+feeder_monthly["month"] = feeder_monthly["month"].str.replace(" (kWh)", "")
 feeder_monthly = feeder_monthly[feeder_monthly["month"].isin(selected_months)]
-feeder_agg = feeder_monthly.groupby(["Feeder","Feeder_Short","Tariff_Rate"], as_index=False)["feeder_energy_kwh"].sum()
-dt_agg_sum = dt_merged_monthly.groupby(["NAME_OF_DT","DT_Short_Name","Feeder","Tariff_Rate","Ownership","Connection Status","total_energy_kwh"], as_index=False)["total_dt_kwh"].sum()
-cust_agg_total = customer_monthly_sel.groupby(["NAME_OF_DT","Feeder"], as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
-dt_merged = dt_agg_sum.merge(cust_agg_total, left_on=["NAME_OF_DT","Feeder"], right_on=["NAME_OF_DT","Feeder"], how="left")
+feeder_agg = feeder_monthly.groupby(["Feeder", "Feeder_Short", "Tariff_Rate"], as_index=False)["feeder_energy_kwh"].sum()
+dt_agg_sum = dt_merged_monthly.groupby(["NAME_OF_DT", "DT_Short_Name", "Feeder", "Tariff_Rate", "Ownership", "Connection Status", "total_energy_kwh"], as_index=False)["total_dt_kwh"].sum()
+cust_agg_total = customer_monthly_sel.groupby(["NAME_OF_DT", "Feeder", "DT_Short_Name"], as_index=False)["billed_kwh"].sum().rename(columns={"billed_kwh":"customer_billed_kwh"})
+dt_merged = dt_agg_sum.merge(cust_agg_total, left_on=["NAME_OF_DT", "Feeder"], right_on=["NAME_OF_DT", "Feeder"], how="left")
 dt_merged["customer_billed_kwh"] = dt_merged["customer_billed_kwh"].fillna(0)
-dt_merged["total_billed_kwh"] = np.where(dt_merged.get("Ownership","").str.strip().str.upper().isin(["PRIVATE"]), dt_merged["total_dt_kwh"], dt_merged["customer_billed_kwh"])
-dt_merged["dt_billing_efficiency"] = np.where((dt_merged.get("Connection Status","").str.strip().str.upper()=="NOT CONNECTED") & (dt_merged["total_energy_kwh"]>0), 0.0, (dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0,1)).clip(0,1))
+dt_merged["total_billed_kwh"] = np.where(dt_merged.get("Ownership", "").str.strip().str.upper().isin(["PRIVATE"]), dt_merged["total_dt_kwh"], dt_merged["customer_billed_kwh"])
+dt_merged["dt_billing_efficiency"] = np.where((dt_merged.get("Connection Status", "").str.strip().str.upper()=="NOT CONNECTED") & (dt_merged["total_energy_kwh"]>0), 0.0, (dt_merged["total_billed_kwh"] / dt_merged["total_dt_kwh"].replace(0,1)).clip(0,1))
 feeder_agg_billed = dt_merged.groupby("Feeder", as_index=False)["total_billed_kwh"].sum()
 feeder_merged = feeder_agg.merge(feeder_agg_billed, on="Feeder", how="left")
 feeder_merged["total_billed_kwh"] = feeder_merged["total_billed_kwh"].fillna(0)
 feeder_merged["feeder_billing_efficiency"] = (feeder_merged["total_billed_kwh"] / feeder_merged["feeder_energy_kwh"].replace(0,1)).clip(0,1)
-customer_monthly_sel = customer_monthly_sel.merge(feeder_merged[["Feeder","feeder_billing_efficiency"]], on="Feeder", how="left")
-customer_monthly_sel = customer_monthly_sel.merge(dt_merged[["NAME_OF_DT","dt_billing_efficiency"]], left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
-escal_df_local = escalations_df.copy()
-escal_df_local["Report_Count"] = 1
-feeder_escal = escal_df_local.groupby("Feeder", as_index=False)["Report_Count"].sum()
-if not feeder_escal.empty:
-    feeder_escal["location_trust_score"] = feeder_escal["Report_Count"] / feeder_escal["Report_Count"].max()
-else:
-    feeder_escal = pd.DataFrame(columns=["Feeder","location_trust_score"])
-dt_escal = escal_df_local.groupby("DT Nomenclature", as_index=False)["Report_Count"].sum()
-if not dt_escal.empty:
-    dt_escal["location_trust_score"] = dt_escal["Report_Count"] / dt_escal["Report_Count"].max()
-else:
-    dt_escal = pd.DataFrame(columns=["DT Nomenclature","location_trust_score"])
-customer_monthly_sel = customer_monthly_sel.merge(dt_escal[["DT Nomenclature","location_trust_score"]], left_on="NAME_OF_DT", right_on="DT Nomenclature", how="left")
-customer_monthly_sel = customer_monthly_sel.merge(feeder_escal[["Feeder","location_trust_score"]], on="Feeder", how="left", suffixes=("_dt","_feeder"))
-customer_monthly_sel["location_trust_score"] = customer_monthly_sel["location_trust_score_dt"].combine_first(customer_monthly_sel["location_trust_score_feeder"]).fillna(0)
-customer_monthly_sel["pattern_deviation_score"] = customer_monthly_sel["pattern_deviation_score"].fillna(0)
-customer_monthly_sel["zero_counter_score"] = customer_monthly_sel["zero_counter_score"].fillna(0)
-customer_monthly_sel["dt_relative_usage_score"] = customer_monthly_sel["dt_relative_usage_score"].fillna(0)
-customer_monthly_sel["feeder_billing_efficiency"] = customer_monthly_sel["feeder_billing_efficiency"].fillna(0)
-customer_monthly_sel["dt_billing_efficiency"] = customer_monthly_sel["dt_billing_efficiency"].fillna(0)
+feeder_merged = feeder_merged.merge(feeder_escal[["Feeder", "location_trust_score"]], on="Feeder", how="left")
+feeder_merged["location_trust_score"] = feeder_merged["location_trust_score"].fillna(0.0)
+customer_monthly_sel = customer_monthly_sel.merge(feeder_merged[["Feeder", "feeder_billing_efficiency", "location_trust_score"]], on="Feeder", how="left")
+customer_monthly_sel = customer_monthly_sel.merge(dt_merged[["NAME_OF_DT", "dt_billing_efficiency"]], left_on="NAME_OF_DT", right_on="NAME_OF_DT", how="left")
+customer_monthly_sel = customer_monthly_sel.merge(dt_escal[["DT Nomenclature", "location_trust_score"]], left_on="NAME_OF_DT", right_on="DT Nomenclature", how="left")
+customer_monthly_sel = customer_monthly_sel.merge(feeder_escal[["Feeder", "location_trust_score"]], on="Feeder", how="left", suffixes=("_dt", "_feeder"))
+customer_monthly_sel["location_trust_score"] = customer_monthly_sel["location_trust_score_dt"].combine_first(customer_monthly_sel["location_trust_score_feeder"]).fillna(0.0)
+customer_monthly_sel["pattern_deviation_score"] = customer_monthly_sel["pattern_deviation_score"].fillna(0.0)
+customer_monthly_sel["zero_counter_score"] = customer_monthly_sel["zero_counter_score"].fillna(0.0)
+customer_monthly_sel["dt_relative_usage_score"] = customer_monthly_sel["dt_relative_usage_score"].fillna(0.0)
+customer_monthly_sel["feeder_billing_efficiency"] = customer_monthly_sel["feeder_billing_efficiency"].fillna(0.0)
+customer_monthly_sel["dt_billing_efficiency"] = customer_monthly_sel["dt_billing_efficiency"].fillna(0.0)
 customer_monthly_sel["theft_probability"] = (
     w_feeder * (1 - customer_monthly_sel["feeder_billing_efficiency"]) +
     w_dt * (1 - customer_monthly_sel["dt_billing_efficiency"]) +
@@ -627,15 +625,15 @@ customer_monthly_sel["theft_probability"] = (
     w_relative * customer_monthly_sel["dt_relative_usage_score"] +
     w_zero * customer_monthly_sel["zero_counter_score"]
 ).clip(0,1)
-customer_monthly_sel["risk_tier"] = pd.cut(customer_monthly_sel["theft_probability"], bins=[0,0.4,0.7,1.0], labels=["Low","Medium","High"], include_lowest=True)
-month_customers = customer_monthly_sel.groupby(["ACCOUNT_NUMBER","METER_NUMBER","CUSTOMER_NAME","ADDRESS","Billing_Type"], as_index=False).agg({
-    "billed_kwh":"sum",
-    "theft_probability":"mean",
-    "pattern_deviation_score":"mean",
-    "dt_relative_usage_score":"mean",
-    "zero_counter_score":"mean"
+customer_monthly_sel["risk_tier"] = pd.cut(customer_monthly_sel["theft_probability"], bins=[0,0.4,0.7,1.0], labels=["Low", "Medium", "High"], include_lowest=True)
+month_customers = customer_monthly_sel.groupby(["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "Billing_Type", "DT_Short_Name"], as_index=False).agg({
+    "billed_kwh": "sum",
+    "theft_probability": "mean",
+    "pattern_deviation_score": "mean",
+    "dt_relative_usage_score": "mean",
+    "zero_counter_score": "mean"
 })
-month_customers = month_customers.rename(columns={"billed_kwh":"billed_kwh_total","theft_probability":"theft_probability_avg"})
+month_customers = month_customers.rename(columns={"billed_kwh": "billed_kwh_total", "theft_probability": "theft_probability_avg"})
 
 # DT Theft Heatmap
 st.subheader("DT Theft Probability Heatmap")
@@ -651,7 +649,7 @@ if selected_feeder:
             dt_pivot = dt_filtered.pivot_table(index="DT_Short_Name", columns="month", values="dt_billing_efficiency", aggfunc="mean").reindex(index=order, columns=selected_months)
             if not dt_pivot.empty:
                 plt.figure(figsize=(10, max(4, len(dt_pivot)/2)))
-                sns.heatmap(1 - dt_pivot, vmin=0, vmax=1, cmap="Reds", cbar_kws={"label":"DT Theft Probability"})
+                sns.heatmap(1 - dt_pivot, vmin=0, vmax=1, cmap="Reds", cbar_kws={"label": "DT Theft Probability"})
                 plt.title(f"DT Theft Probability for {selected_feeder_short} ({start_month} to {end_month})")
                 st.pyplot(plt.gcf())
                 plt.close()
@@ -679,7 +677,7 @@ if selected_dt_short:
             pivot_data = filtered_for_heatmap.pivot_table(index="ACCOUNT_NUMBER", columns="month", values="theft_probability", aggfunc="mean").reindex(index=customer_order[:num_customers or None], columns=selected_months)
             if not pivot_data.empty:
                 plt.figure(figsize=(10, max(4, len(pivot_data)/2)))
-                sns.heatmap(pivot_data, vmin=0, vmax=1, cmap="Reds", cbar_kws={"label":"Theft Probability"})
+                sns.heatmap(pivot_data, vmin=0, vmax=1, cmap="Reds", cbar_kws={"label": "Theft Probability"})
                 plt.title(f"Theft Probability for {selected_dt_short} ({selected_feeder_short})")
                 st.pyplot(plt.gcf())
                 plt.close()
@@ -695,20 +693,20 @@ if selected_dt_short:
     if filtered_customers.empty:
         st.warning("No customers for this DT in selected period.")
     else:
-        display_df = filtered_customers.groupby(["ACCOUNT_NUMBER","METER_NUMBER","CUSTOMER_NAME","ADDRESS","Billing_Type"], as_index=False).agg({
-            "billed_kwh":"sum",
-            "theft_probability":"mean",
-            "pattern_deviation_score":"mean",
-            "dt_relative_usage_score":"mean",
-            "zero_counter_score":"mean"
-        }).rename(columns={"billed_kwh":"billed_kwh_total","theft_probability":"theft_probability_avg"})
+        display_df = filtered_customers.groupby(["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "Billing_Type"], as_index=False).agg({
+            "billed_kwh": "sum",
+            "theft_probability": "mean",
+            "pattern_deviation_score": "mean",
+            "dt_relative_usage_score": "mean",
+            "zero_counter_score": "mean"
+        }).rename(columns={"billed_kwh": "billed_kwh_total", "theft_probability": "theft_probability_avg"})
         display_df = display_df.sort_values("theft_probability_avg", ascending=False)
         st.dataframe(display_df.style.format({
-            "billed_kwh_total":"{:.2f}",
-            "theft_probability_avg":"{:.3f}",
-            "pattern_deviation_score":"{:.3f}",
-            "dt_relative_usage_score":"{:.3f}",
-            "zero_counter_score":"{:.3f}"
+            "billed_kwh_total": "{:.2f}",
+            "theft_probability_avg": "{:.3f}",
+            "pattern_deviation_score": "{:.3f}",
+            "dt_relative_usage_score": "{:.3f}",
+            "zero_counter_score": "{:.3f}"
         }), use_container_width=True)
 
 # Feeder Summary
@@ -717,9 +715,9 @@ try:
     feeder_summary = feeder_merged.copy()
     feeder_summary["Period"] = f"{start_month} to {end_month}"
     st.dataframe(feeder_summary.style.format({
-        "feeder_energy_kwh":"{:.2f}",
-        "total_billed_kwh":"{:.2f}",
-        "feeder_billing_efficiency":"{:.3f}"
+        "feeder_energy_kwh": "{:.2f}",
+        "total_billed_kwh": "{:.2f}",
+        "feeder_billing_efficiency": "{:.3f}"
     }), use_container_width=True)
 except Exception as e:
     st.error(f"Feeder summary failed: {e}")
@@ -728,14 +726,14 @@ except Exception as e:
 st.subheader("DT Summary")
 try:
     dt_summary_show = dt_merged.groupby("DT_Short_Name").agg({
-        "total_dt_kwh":"sum",
-        "total_billed_kwh":"sum",
-        "dt_billing_efficiency":"mean"
+        "total_dt_kwh": "sum",
+        "total_billed_kwh": "sum",
+        "dt_billing_efficiency": "mean"
     }).reset_index()
     st.dataframe(dt_summary_show.style.format({
-        "total_dt_kwh":"{:.2f}",
-        "total_billed_kwh":"{:.2f}",
-        "dt_billing_efficiency":"{:.3f}"
+        "total_dt_kwh": "{:.2f}",
+        "total_billed_kwh": "{:.2f}",
+        "dt_billing_efficiency": "{:.3f}"
     }), use_container_width=True)
 except Exception as e:
     st.error(f"DT summary failed: {e}")
@@ -743,18 +741,27 @@ except Exception as e:
 # Export customer list CSV
 st.subheader("Export Customer Data")
 try:
-    if not month_customers.empty:
-        csv = month_customers.to_csv(index=False)
-        st.download_button(label=f"Download Customer List ({start_month} to {end_month})", data=csv, file_name=f"theft_analysis_{start_month}_to_{end_month}.csv", mime="text/csv")
+    if selected_dt_short:
+        export_customers = month_customers[month_customers["DT_Short_Name"] == selected_dt_short]
+        if not export_customers.empty:
+            csv = export_customers.to_csv(index=False)
+            st.download_button(
+                label=f"Download Customer List for {selected_dt_short} ({start_month} to {end_month})",
+                data=csv,
+                file_name=f"theft_analysis_{selected_dt_short}_{start_month}_to_{end_month}.csv",
+                mime="text/csv"
+            )
+        else:
+            st.info(f"No customer data to export for DT {selected_dt_short}.")
     else:
-        st.info("No customer list to export.")
+        st.info("Select a DT to export customer data.")
 except Exception as e:
     st.error(f"CSV export failed: {e}")
 
 # Escalations report
 st.subheader("Escalations Report (full lookup of 'Account No')")
 try:
-    cust_scores_avg = customer_monthly_sel.groupby("ACCOUNT_NUMBER", as_index=False)["theft_probability"].mean().rename(columns={"theft_probability":"theft_probability"})
+    cust_scores_avg = customer_monthly_sel.groupby("ACCOUNT_NUMBER", as_index=False)["theft_probability"].mean().rename(columns={"theft_probability": "theft_probability"})
     escal_report_df = generate_escalations_report(ppm_df, ppd_df, escalations_df, cust_scores_avg, months)
     if escal_report_df.empty:
         st.info("Escalations report produced no rows.")
@@ -765,9 +772,42 @@ try:
         towrite = io.BytesIO()
         with pd.ExcelWriter(towrite, engine='openpyxl') as writer:
             escal_report_df.to_excel(writer, index=False, sheet_name="Escalations Report")
-        st.download_button(label="📥 Download Escalations Report (Excel)", data=towrite.getvalue(), file_name="Escalations_Report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button(
+            label="📥 Download Escalations Report (Excel)",
+            data=towrite.getvalue(),
+            file_name="Escalations_Report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 except Exception as e:
     st.error(f"Failed to generate escalations report: {e}")
+
+# Energy Not Billed Summary
+st.subheader("Energy Not Billed Summary Across All Feeders")
+try:
+    unbilled_summary = feeder_merged[["Feeder", "Feeder_Short", "feeder_energy_kwh", "total_billed_kwh", "Tariff_Rate"]].copy()
+    unbilled_summary["unbilled_kwh"] = unbilled_summary["feeder_energy_kwh"] - unbilled_summary["total_billed_kwh"]
+    unbilled_summary["unbilled_kwh"] = unbilled_summary["unbilled_kwh"].clip(lower=0)
+    unbilled_summary["monetary_loss_ngn"] = unbilled_summary["unbilled_kwh"] * unbilled_summary["Tariff_Rate"]
+    total_unbilled_kwh = unbilled_summary["unbilled_kwh"].sum()
+    total_monetary_loss = unbilled_summary["monetary_loss_ngn"].sum()
+    unbilled_summary = unbilled_summary.append({
+        "Feeder": "Total",
+        "Feeder_Short": "Total",
+        "feeder_energy_kwh": np.nan,
+        "total_billed_kwh": np.nan,
+        "Tariff_Rate": np.nan,
+        "unbilled_kwh": total_unbilled_kwh,
+        "monetary_loss_ngn": total_monetary_loss
+    }, ignore_index=True)
+    st.dataframe(unbilled_summary.style.format({
+        "feeder_energy_kwh": "{:.2f}",
+        "total_billed_kwh": "{:.2f}",
+        "Tariff_Rate": "{:.2f}",
+        "unbilled_kwh": "{:.2f}",
+        "monetary_loss_ngn": "{:.2f}"
+    }, na_rep=""), use_container_width=True)
+except Exception as e:
+    st.error(f"Energy not billed summary failed: {e}")
 
 # Footer
 st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
