@@ -725,25 +725,35 @@ else:
     st.info("Generate the customer list first to enable export.")
 
 
+import io
+
 def generate_escalations_report(prepaid_df, postpaid_df, escalations_df):
-    # Combine PPM + PPD
+    # Combine prepaid + postpaid customers
     customer_df = pd.concat([prepaid_df, postpaid_df], ignore_index=True)
     customer_df['ACCOUNT_NUMBER'] = customer_df['ACCOUNT_NUMBER'].astype(str).str.strip()
     escalations_df['Account No'] = escalations_df['Account No'].astype(str).str.strip()
 
-    # Columns to collect (ensure they exist)
-    monthly_cols = [col for col in customer_df.columns if "(kWh)" in col]
+    # Find monthly energy columns dynamically
+    monthly_cols = [c for c in customer_df.columns if '(kWh)' in c]
+
     required_cols = ['ACCOUNT_NUMBER', 'CUSTOMER_NAME', 'NAME_OF_FEEDER', 'NAME_OF_DT', 'theft_score'] + monthly_cols
 
-    results = []
-    not_found = []
+    # Add any missing columns as empty so report doesn't crash
+    for col in required_cols:
+        if col not in customer_df.columns:
+            customer_df[col] = np.nan
+
+    results, not_found = [], []
 
     for acct in escalations_df['Account No']:
         match = customer_df[customer_df['ACCOUNT_NUMBER'] == acct]
         if not match.empty:
             results.append(match[required_cols])
         else:
-            not_found.append({"ACCOUNT_NUMBER": acct, "CUSTOMER_NAME": "NOT FOUND"})
+            row = {col: np.nan for col in required_cols}
+            row['ACCOUNT_NUMBER'] = acct
+            row['CUSTOMER_NAME'] = "NOT FOUND"
+            not_found.append(row)
 
     report_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame(columns=required_cols)
     if not_found:
@@ -751,25 +761,9 @@ def generate_escalations_report(prepaid_df, postpaid_df, escalations_df):
 
     return report_df
 
-# --- STREAMLIT BUTTON & DOWNLOAD ---
-if st.button("Generate Escalations Report"):
-    report_df = generate_escalations_report(ppm_df, ppd_df, escalations_df)
-
-    if report_df.empty:
-        st.warning("No matching customers found in Escalations list.")
-    else:
-        st.success(f"Generated report for {len(report_df)} accounts")
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            report_df.to_excel(writer, index=False, sheet_name="Escalations Report")
-        st.download_button(
-            label="Download Escalations Report",
-            data=buffer.getvalue(),
-            file_name="escalations_report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
 
 # Footer
 st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
+
 
 
