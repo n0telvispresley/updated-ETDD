@@ -723,5 +723,69 @@ if selected_dt_short and 'month_customers' in locals() and not month_customers.e
 else:
     st.info("Generate the customer list first to enable export.")
 
+
+# Function to generate the report
+def generate_escalations_report(prepaid_df, postpaid_df, escalations_df):
+    account_numbers = escalations_df['Account No'].astype(str).tolist()
+    report_rows = []
+
+    # Combine prepaid and postpaid for easy searching
+    customers_df = pd.concat([prepaid_df, postpaid_df], ignore_index=True)
+
+    for acc in account_numbers:
+        matched = customers_df[customers_df['ACCOUNT_NUMBER'].astype(str) == acc]
+
+        if matched.empty:
+            report_rows.append({
+                "Account No": acc,
+                "Customer Name": "Not Found",
+                "Feeder": "Not Found",
+                "DT": "Not Found",
+                "Status": "Not Found"
+            })
+        else:
+            for _, row in matched.iterrows():
+                data = {
+                    "Account No": acc,
+                    "Customer Name": row.get("CUSTOMER_NAME", ""),
+                    "Feeder": row.get("FEEDER", ""),
+                    "DT": row.get("DT_NOMENCLATURE", ""),
+                    "Theft Score": row.get("THEFT_SCORE", ""),
+                    "Status": "Found"
+                }
+                
+                # Add energy readings dynamically (whatever months exist)
+                for col in customers_df.columns:
+                    if col.lower().startswith("energy_") or col.lower() in ["jan", "feb", "mar", "apr", "may", "jun", 
+                                                                          "jul", "aug", "sep", "oct", "nov", "dec"]:
+                        data[col] = row.get(col, "")
+                
+                report_rows.append(data)
+
+    return pd.DataFrame(report_rows)
+
+
+st.subheader("Escalations Report")
+
+if st.button("Generate Escalations Report"):
+    report_df = generate_escalations_report(prepaid_df, postpaid_df, escalations_df)
+
+    st.success(f"Report generated! {len(report_df)} records processed.")
+    st.dataframe(report_df, use_container_width=True)
+
+    # Prepare file for download
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        report_df.to_excel(writer, index=False, sheet_name="Escalations Report")
+    buffer.seek(0)
+
+    st.download_button(
+        label="📥 Download Escalations Report",
+        data=buffer,
+        file_name="Escalations_Report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
 # Footer
 st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. 2025.")
+
