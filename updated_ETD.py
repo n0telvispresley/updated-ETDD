@@ -388,7 +388,7 @@ if model_choice == 'Weighted Rule-Based Model':
     w_pattern /= total_weight
     w_relative /= total_weight
     w_zero /= total_weight
-    contamination_rate = 0.01 # Dummy value for ML function consistency
+    contamination_rate = 0.01
 else: # Isolation Forest ML Model
     st.subheader("Isolation Forest Parameters")
     contamination_rate = st.slider(
@@ -397,7 +397,7 @@ else: # Isolation Forest ML Model
         key='contamination_rate',
         help="Expected fraction of anomalies. Affects the model's threshold for anomaly classification."
     )
-    w_feeder = w_dt = w_location = w_pattern = w_relative = w_zero = 1.0 # Set dummy weights
+    w_feeder = w_dt = w_location = w_pattern = w_relative = w_zero = 1.0
 
 # --- Calculation Pipeline ---
 
@@ -491,24 +491,24 @@ customer_monthly_sel = customer_monthly_sel.merge(
 # Select the score to use based on user choice
 if model_choice == 'Weighted Rule-Based Model':
     score_column = "theft_probability_weighted"
-    score_label = "Weighted Probability (Avg)"
+    final_score_col = "Weighted Probability (Avg)"
 else:
     score_column = "theft_probability_ml"
-    score_label = "ML Probability (Avg)"
+    final_score_col = "ML Probability (Avg)"
 
 customer_monthly_sel["risk_tier"] = pd.cut(customer_monthly_sel[score_column], bins=[0,0.4,0.7,1.0], labels=["Low", "Medium", "High"], include_lowest=True)
 
 # --- Aggregation for Display ---
 month_customers = customer_monthly_sel.groupby(["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "ADDRESS", "Billing_Type", "DT_Short_Name"], as_index=False).agg({
     "billed_kwh": "sum",
-    "theft_probability_weighted": "mean",  # Aggregate both scores
-    "theft_probability_ml": "mean",
+    "theft_probability_weighted": "mean",  # Aggregated as 'theft_probability_weighted'
+    "theft_probability_ml": "mean",        # Aggregated as 'theft_probability_ml'
     "F_Pattern": "mean",
     "F_Relative": "mean",
     "F_Zero": "mean"
 })
 
-# Rename for final display clarity
+# --- CRITICAL FIX: RENAME ALL COLUMNS ONCE ---
 month_customers = month_customers.rename(columns={
     "billed_kwh": "billed_kwh_total", 
     "theft_probability_weighted": "Weighted Probability (Avg)",
@@ -518,13 +518,39 @@ month_customers = month_customers.rename(columns={
     "F_Zero": "Zero Frequency Score"
 })
 
-# Define the final score column name used for sorting and the display list
-final_score_col = score_label
-month_customers = month_customers.rename(columns={score_column: final_score_col})
+# Now, ensure the final sorting column matches the chosen model's *display name*
+# This is clean: We assign the chosen score's display name to a temporary variable for sorting
+if final_score_col == "Weighted Probability (Avg)":
+    sort_column = "Weighted Probability (Avg)"
+else:
+    sort_column = "ML Probability (Avg)"
 
 # --- Visualization and Display ---
 st.subheader(f"DT Risk Heatmap (Based on DT Billing Efficiency)")
-# ... (DT heatmap logic remains the same, based on dt_billing_efficiency)
+if selected_feeder:
+    try:
+        dt_filtered = dt_merged_monthly[dt_merged_monthly["Feeder"] == selected_feeder]
+        if dt_filtered.empty:
+            st.warning("No DT monthly data for this feeder.")
+        else:
+            # DT scoring logic uses month-by-month billing efficiency
+            dt_scores = dt_filtered.groupby("DT_Short_Name")["dt_billing_efficiency"].mean().reset_index()
+            dt_scores["theft_probability"] = 1 - dt_scores["dt_billing_efficiency"]
+            order = dt_scores.sort_values("theft_probability", ascending=False)["DT_Short_Name"].tolist()
+            
+            # The pivot table correctly uses the monthly efficiency
+            dt_pivot = dt_filtered.pivot_table(index="DT_Short_Name", columns="month", values="dt_billing_efficiency", aggfunc="mean").reindex(index=order, columns=selected_months)
+            
+            if not dt_pivot.empty:
+                plt.figure(figsize=(10, max(4, len(dt_pivot)/2)))
+                sns.heatmap(1 - dt_pivot, vmin=0, vmax=1, cmap="Reds", cbar_kws={"label": "DT Billing Efficiency Risk"})
+                plt.title(f"DT Billing Efficiency Risk for {selected_feeder} ({start_month} to {end_month})")
+                st.pyplot(plt.gcf())
+                plt.close()
+            else:
+                st.warning("No DT pivot data.")
+    except Exception as e:
+        st.error(f"DT heatmap failed: {e}")
 
 st.subheader(f"Customer Theft Probability Heatmap (Based on {final_score_col})")
 if selected_dt_short:
@@ -563,13 +589,19 @@ if selected_dt_short:
     if filtered_customers.empty:
         st.warning("No customers for this DT in selected period.")
     else:
-        display_df = filtered_customers.sort_values(final_score_col, ascending=False)
+        # Sort using the explicitly chosen, correctly renamed column
+        display_df = filtered_customers.sort_values(sort_column, ascending=False)
         
-        # This list now uses the explicitly renamed columns, ensuring they all exist.
+        # Ensure the final_score_col is the chosen one, but display both scores for comparison
         cols_to_display = ["ACCOUNT_NUMBER", "METER_NUMBER", "CUSTOMER_NAME", "Billing_Type", 
-                           final_score_col, "Weighted Probability (Avg)", "ML Probability (Avg)",
+                           "Weighted Probability (Avg)", "ML Probability (Avg)",
                            "Pattern Deviation Score", "Zero Frequency Score", "DT Relative Usage Score", "billed_kwh_total"]
         
+        # Move the chosen score to the front of the list visually
+        if sort_column != "Weighted Probability (Avg)":
+            cols_to_display.remove(sort_column)
+            cols_to_display.insert(4, sort_column)
+
         st.dataframe(display_df[cols_to_display].style.format({
             "billed_kwh_total": "{:.2f}",
             "Weighted Probability (Avg)": "{:.3f}",
@@ -579,13 +611,12 @@ if selected_dt_short:
             "Zero Frequency Score": "{:.3f}"
         }), use_container_width=True)
 
-# --- (Rest of the app, Feeder/DT Summaries, Export, and Metrics remain here) ---
 # Feeder Summary
 st.subheader("Feeder Summary")
 try:
     feeder_summary = feeder_merged.copy()
     feeder_summary["Period"] = f"{start_month} to {end_month}"
-    feeder_summary = feeder_summary.merge(tariff_df[["Tariff", "Rate (NGN)"]].rename(columns={"Rate (NGN)": "Avg_Tariff_Rate"}), left_on="Feeder", right_on="Feeder", how="left")
+    # Merge tariff_df is missing a column to merge on, removed merge for simplicity to avoid crashing
     st.dataframe(feeder_summary.style.format({
         "feeder_energy_kwh": "{:.2f}",
         "total_billed_kwh": "{:.2f}",
@@ -638,7 +669,8 @@ try:
         **{"ML Probability (Avg)": ('theft_probability_ml', 'mean')}
     ).reset_index(drop=True)
     
-    escal_report_df = generate_escalations_report(ppm_df, ppd_df, escalations_df, cust_scores_avg, months, final_score_col)
+    # We pass the chosen sort_column name to the report generator so it can label the score correctly
+    escal_report_df = generate_escalations_report(ppm_df, ppd_df, escalations_df, cust_scores_avg, months, sort_column)
     
     if escal_report_df.empty: st.info("Escalations report produced no rows.")
     else:
@@ -653,9 +685,6 @@ try:
         )
 except Exception as e:
     st.error(f"Failed to generate escalations report: {e}")
-
-# Quick Performance Metrics (Logic is not affected by score choice)
-# ...
 
 # Footer
 st.markdown("Built by Elvis Ebenuwah for Ikeja Electric. SniffIt🐶 2025.")
